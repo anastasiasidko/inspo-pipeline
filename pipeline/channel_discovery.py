@@ -17,7 +17,7 @@ from pipeline import usage_log
 
 logger = logging.getLogger(__name__)
 
-DISCOVERY_MODEL = "claude-sonnet-5"
+DISCOVERY_MODEL = "claude-haiku-4-5-20251001"  # web search also works on Haiku, at about a third of the price
 PROMPT = """Find the official online channels of "{name}", a thought leader / coach / consultant / creator
 (context: personal branding, freelancing, business growth for passion-driven professionals, career and burnout).
 

@@ -66,7 +66,7 @@ if state.step == 1:
     days = st.number_input("Look back (days)", min_value=1, max_value=90, value=7)
     refresh = st.checkbox("Search again even if channels were saved before")
 
-    st.caption("Finding channels uses web search: about $0.15 per name (estimated from your Anthropic log). "
+    st.caption("Finding channels uses web search: about $0.05–0.10 per name (web search fees are about $0.01 per search). "
                "The same name is never searched twice within a day unless you tick the box above.")
     if st.button("Find their channels", type="primary"):
         names = [n.strip() for n in names_text.splitlines() if n.strip()]

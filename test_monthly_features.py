@@ -148,7 +148,8 @@ def test_every_ai_call_is_logged_with_its_purpose_and_cost_and_flushed_to_the_sh
         channel_discovery.discover_channels("Val Nelson")
     (row,) = usage_log._pending
     assert row["purpose"] == "Find channels" and row["detail"] == "Val Nelson" and row["web_searches"] == 6
-    assert row["est_cost_usd"] == round(20 * 0.002 + 0.5 * 0.010 + 6 * 0.01, 5)  # sonnet-5 prices + 6 searches
+    assert row["model"] == "claude-haiku-4-5-20251001"  # channel discovery runs on Haiku
+    assert row["est_cost_usd"] == round(20 * 0.001 + 0.5 * 0.005 + 6 * 0.01, 5)  # haiku prices + 6 searches
     assert usage_log.summary()[0]["est cost $"] == row["est_cost_usd"]
 
     storage = InMemoryBackend()
