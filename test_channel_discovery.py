@@ -24,3 +24,33 @@ def test_sources():
 
 if __name__ == "__main__":
     print("Channel discovery — offline test"); test_sources(); print("ALL TESTS PASSED")
+
+
+def test_the_same_name_is_searched_once_even_if_asked_twice_at_the_same_time():
+    import json
+    import threading
+    import time
+    from unittest.mock import MagicMock, patch
+    from pipeline import channel_discovery
+
+    calls = []
+    result = MagicMock(type="web_search_tool_result", content=[MagicMock(url="https://val.com", title="Val")])
+    text = MagicMock(type="text", text=json.dumps([{"label": "Website", "url": "https://val.com", "source": "x"}]))
+    reply = MagicMock(content=[result, text], stop_reason="end_turn", usage=MagicMock(input_tokens=1, output_tokens=1))
+
+    def slow_create(**kw):
+        calls.append(1)
+        time.sleep(0.3)  # the first search is still running when the second request arrives
+        return reply
+
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    out = []
+    with patch("anthropic.Anthropic") as cls:
+        cls.return_value.messages.create.side_effect = slow_create
+        threads = [threading.Thread(target=lambda: out.append(channel_discovery.discover_channels("Val Nelson")))
+                   for _ in range(2)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        channel_discovery.discover_channels("val nelson")  # later, different spelling of the case: still cached
+        channel_discovery.discover_channels("Val Nelson", refresh=True)  # refresh right after: too soon to repeat
+    assert len(calls) == 1 and out[0] == out[1] and out[0][0]["url"] == "https://val.com"

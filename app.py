@@ -66,6 +66,8 @@ if state.step == 1:
     days = st.number_input("Look back (days)", min_value=1, max_value=90, value=7)
     refresh = st.checkbox("Search again even if channels were saved before")
 
+    st.caption("Finding channels uses web search: about $0.15 per name (estimated from your Anthropic log). "
+               "The same name is never searched twice within a day unless you tick the box above.")
     if st.button("Find their channels", type="primary"):
         names = [n.strip() for n in names_text.splitlines() if n.strip()]
         if not names:
@@ -79,7 +81,7 @@ if state.step == 1:
                     if saved.get(name) and not refresh:
                         channels[name] = saved[name]
                     else:
-                        found = discover_channels(name)
+                        found = discover_channels(name, refresh=refresh)
                         channels[name] = "\n".join(f"{c['label']}: {c['url']}" for c in found)
                         sources[name] = [f"{c['label']}: {c['source']}" for c in found]
             usage_log.flush(get_storage())

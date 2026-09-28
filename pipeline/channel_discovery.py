@@ -8,7 +8,9 @@ import json
 import logging
 import os
 import re
-from typing import Dict, List
+import threading
+import time
+from typing import Dict, List, Tuple
 
 from adapters.feed_discovery import URL_RE
 from pipeline import usage_log
@@ -35,7 +37,35 @@ def _norm(url: str) -> str:
     return url.strip().lower().rstrip("/")
 
 
-def discover_channels(name: str, model: str = DISCOVERY_MODEL) -> List[Dict]:
+# Each search is paid (several web searches, and the results are fed back to the model: roughly $0.15 a name).
+# A person can trigger the same search twice — a double click, a page reload while it is running — so the same
+# name is searched once at a time and the answer is reused for a day. `refresh` asks for a new search but never
+# repeats one that finished less than a minute ago.
+CACHE_SECONDS = 24 * 3600
+REFRESH_MIN_AGE = 60
+_cache: Dict[str, Tuple[float, List[Dict]]] = {}
+_locks: Dict[str, threading.Lock] = {}
+_guard = threading.Lock()
+
+
+def discover_channels(name: str, model: str = DISCOVERY_MODEL, refresh: bool = False) -> List[Dict]:
+    key = name.strip().lower()
+    with _guard:
+        lock = _locks.setdefault(key, threading.Lock())
+    with lock:
+        hit = _cache.get(key)
+        if hit:
+            age = time.time() - hit[0]
+            if age < CACHE_SECONDS and not (refresh and age >= REFRESH_MIN_AGE):
+                logger.info(f"Channel search for {name!r}: reusing the answer from {int(age)}s ago (no new charge)")
+                return hit[1]
+        found = _search_channels(name, model)
+        if found:
+            _cache[key] = (time.time(), found)
+        return found
+
+
+def _search_channels(name: str, model: str) -> List[Dict]:
     """-> [{"label", "url", "source"}]. `source` says where the link came from: the search
     result it matched, or a warning if it was not in the search results.
     Returns [] if the search fails (the person can add links by hand)."""
