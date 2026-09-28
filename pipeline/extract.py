@@ -30,6 +30,7 @@ import os
 from typing import Optional, List, Dict
 
 from storage.backend import StorageBackend
+from pipeline import usage_log
 from pipeline.costs import llm_cost_usd
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,7 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
             continue
 
         findings = result["findings"]
+        usage_log.record("Extract findings", model, result["input_tokens"], result["output_tokens"], detail=source_name)
         stats["est_cost"] += llm_cost_usd(config, model, result["input_tokens"], result["output_tokens"])
         stats["model"] = model
         stats["llm_calls"] = stats.get("llm_calls", 0) + 1

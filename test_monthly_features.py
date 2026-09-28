@@ -134,3 +134,23 @@ def test_video_transcript_goes_through_extraction_and_the_digest():
     assert finding["entity"] == "Val Nelson" and finding["quote_verified"]
     assert storage.get_run(result["run_id"])["status"] == "done"
     assert "Val Nelson" in result["digest"] and "raise prices yearly" in result["digest"]
+
+
+# ---------------------------------------------------------------- API usage log
+def test_every_ai_call_is_logged_with_its_purpose_and_cost_and_flushed_to_the_sheet():
+    from pipeline import channel_discovery, usage_log
+    result = MagicMock(type="web_search_tool_result", content=[])
+    reply = MagicMock(content=[result, MagicMock(type="text", text="[]")], stop_reason="end_turn",
+                      usage=MagicMock(input_tokens=20000, output_tokens=500, server_tool_use=MagicMock(web_search_requests=6)))
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    with patch("anthropic.Anthropic") as cls:
+        cls.return_value.messages.create.return_value = reply
+        channel_discovery.discover_channels("Val Nelson")
+    (row,) = usage_log._pending
+    assert row["purpose"] == "Find channels" and row["detail"] == "Val Nelson" and row["web_searches"] == 6
+    assert row["est_cost_usd"] == round(20 * 0.002 + 0.5 * 0.010 + 6 * 0.01, 5)  # sonnet-5 prices + 6 searches
+    assert usage_log.summary()[0]["est cost $"] == row["est_cost_usd"]
+
+    storage = InMemoryBackend()
+    usage_log.flush(storage)
+    assert storage.api_usage[0]["purpose"] == "Find channels" and not usage_log._pending

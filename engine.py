@@ -12,7 +12,7 @@ Two entry points, per the brief:
 import logging
 from typing import Dict, List, Optional
 
-from pipeline import fetch, dedup, extract, score, synthesis, competitor_map, media, run_comment
+from pipeline import fetch, dedup, extract, score, synthesis, competitor_map, media, run_comment, usage_log
 from storage.backend import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -301,6 +301,7 @@ def run_stream(
         raise
 
     storage.finish_run(run_id, stats)
+    usage_log.flush(storage)
     if not dry_run:
         cleanup_stats = storage.cleanup_old_data(retention_days=30)
         if cleanup_stats.get("collected_deleted") or cleanup_stats.get("ai_log_deleted"):

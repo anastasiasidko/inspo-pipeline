@@ -11,6 +11,7 @@ import re
 from typing import Dict, List
 
 from adapters.feed_discovery import URL_RE
+from pipeline import usage_log
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def discover_channels(name: str, model: str = DISCOVERY_MODEL) -> List[Dict]:
                 model=model, max_tokens=4000, messages=messages,
                 tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 6}],
             )
+            usage_log.record_response("Find channels", model, resp, detail=name)
             for block in resp.content:
                 if getattr(block, "type", "") == "web_search_tool_result" and isinstance(block.content, list):
                     for r in block.content:

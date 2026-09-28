@@ -70,3 +70,6 @@ gmail_token.json
 
 # Local backups of the Google Sheet taken before restructuring it
 backups/
+
+# Local log of every Anthropic call the app makes
+api_usage.jsonl

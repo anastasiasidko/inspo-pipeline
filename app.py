@@ -20,7 +20,7 @@ from adapters.newsletter_signup import submit_signup
 from pipeline import newsletter_routing
 from adapters.scraper_registry import has_scraper, platform_of, pretty
 from pipeline.channel_discovery import discover_channels
-from pipeline import media
+from pipeline import media, usage_log
 from pipeline.suggestions import suggest_new_voices
 
 load_dotenv()
@@ -82,6 +82,7 @@ if state.step == 1:
                         found = discover_channels(name)
                         channels[name] = "\n".join(f"{c['label']}: {c['url']}" for c in found)
                         sources[name] = [f"{c['label']}: {c['source']}" for c in found]
+            usage_log.flush(get_storage())
             state.channels, state.sources, state.names, state.lookback, state.step = channels, sources, names, int(days), 2
             st.rerun()
 
@@ -253,6 +254,7 @@ else:
                 state.suggestions = suggest_new_voices(state.digest, [n for n in followed + state.names if n],
                                                        usage_out=usage)
                 state.suggestions_error = usage.get("error")
+                usage_log.flush(get_storage())
             st.rerun()
     elif not state.suggestions:
         st.info("No suggestions came back with a source I could check. Try again later."
@@ -273,3 +275,15 @@ else:
     if st.button("Start over"):
         state.step = 1
         st.rerun()
+
+
+# ---------------------------------------------------------------- spend log
+with st.expander("What the AI has cost (logged by this app, estimated)"):
+    rows = usage_log.summary(days=31)
+    if rows:
+        st.caption("Last 31 days, by what it was for. Web searches are $0.01 each. The Anthropic Console shows what "
+                   "was actually billed. Every call is also a row in the API_usage tab.")
+        st.table(rows)
+        st.write(f"Total: about ${sum(r['est cost $'] for r in rows):.2f}")
+    else:
+        st.caption("Nothing logged yet. From now on every AI call this app makes is recorded here.")

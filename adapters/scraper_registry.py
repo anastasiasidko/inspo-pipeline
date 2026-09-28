@@ -177,6 +177,8 @@ Return the JSON object only, no other text."""
     try:
         resp = anthropic.Anthropic(api_key=key).messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=1500, messages=[{"role": "user", "content": prompt}])
+        from pipeline import usage_log
+        usage_log.record_response("Write scraper input", "claude-haiku-4-5-20251001", resp, detail=platform)
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         m = re.search(r"\{.*\}", text, re.S)
         raw = re.sub(r'(?<!")\{(max_items|days)\}(?!")', r'"{\1}"', m.group(0)) if m else None  # tolerate unquoted numbers

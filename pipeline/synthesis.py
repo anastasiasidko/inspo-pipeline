@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from storage.backend import StorageBackend
+from pipeline import usage_log
 from pipeline.costs import llm_cost_usd
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ def _call_llm_for_conclusions(grouped_findings: Dict[str, List[Dict]], model: st
             max_tokens=8000,  # room for the model's own reasoning as well as the answer
             messages=[{"role": "user", "content": prompt}],
         )
+        usage_log.record_response("Write digest", model, response)
         usage = getattr(response, "usage", None)
         if usage_out is not None and usage is not None:
             usage_out.update(model=model, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,

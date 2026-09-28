@@ -18,6 +18,7 @@ import os
 import re
 from typing import Dict, List
 
+from pipeline import usage_log
 from pipeline.costs import llm_cost_usd
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def parse_run_comment(comment: str, sources: List[Dict], default_days: int, conf
             text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
             m = re.search(r"\{.*\}", text, re.S)
             parsed = json.loads(m.group(0)) if m else None
+            usage_log.record_response("Read run comment", model, resp)
             usage = getattr(resp, "usage", None)
             if usage is not None:
                 out["cost"] = llm_cost_usd(config or {}, model, usage.input_tokens, usage.output_tokens)

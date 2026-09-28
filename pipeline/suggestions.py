@@ -12,6 +12,7 @@ import re
 from typing import Dict, List
 
 from adapters.feed_discovery import URL_RE
+from pipeline import usage_log
 from pipeline.channel_discovery import _norm
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,8 @@ Return JSON only, no other text:
 [{{"name": "...", "why": "...", "url": "https://...", "reach": null, "reach_source": null}}]"""
 
 
-def _search_people(prompt: str, existing_names: List[str], n: int, model: str, usage_out: dict = None) -> List[Dict]:
+def _search_people(prompt: str, existing_names: List[str], n: int, model: str, usage_out: dict = None,
+                   purpose: str = "Suggest people") -> List[Dict]:
     """Shared by both entry points. -> up to n verified {name, why, url, reach, reach_source}; [] on failure."""
     import anthropic
     key = os.environ.get("ANTHROPIC_API_KEY")
@@ -74,6 +76,7 @@ def _search_people(prompt: str, existing_names: List[str], n: int, model: str, u
             resp = client.messages.create(
                 model=model, max_tokens=6000, messages=messages,
                 tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 8}])
+            usage_log.record_response(purpose, model, resp)
             usage = getattr(resp, "usage", None)
             if usage_out is not None and usage is not None:
                 usage_out["input"] = usage_out.get("input", 0) + (getattr(usage, "input_tokens", 0) or 0)
@@ -128,4 +131,4 @@ def similar_voices(name: str, about: str, rules: str, existing_names: List[str],
     prompt = SIMILAR_PROMPT.format(
         name=name, about=(about or "no recent posts available")[:4000], rules=(rules or "none")[:4000],
         n=n + 2, existing=", ".join(existing_names) or "none")
-    return _search_people(prompt, existing_names + [name], n, model, usage_out)
+    return _search_people(prompt, existing_names + [name], n, model, usage_out, purpose=f"Similar people: {name}")

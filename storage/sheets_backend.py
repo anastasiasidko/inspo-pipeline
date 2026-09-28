@@ -64,6 +64,8 @@ TAB_HEADERS = {
         "target_audience", "terminology", "other_note", "created_at",
     ],
     "Digests": ["run_id", "date_range", "digest_text", "created_at"],
+    # Every Anthropic call the app makes: what for, tokens, web searches, estimated cost.
+    "API_usage": ["at", "purpose", "model", "input_tokens", "output_tokens", "web_searches", "est_cost_usd", "detail"],
     # One row per channel (posts, cadence) and, for runs with #map, one row per similar person found
     # (channel = "Similar voice", the last four columns filled).
     "Competitor_map": ["run_id", "created_at", "competitor", "channel", "posts", "posts_per_week",
@@ -457,6 +459,11 @@ class SheetsBackend(StorageBackend):
             and float(row.get("confidence") or 0) >= min_confidence
         ]
         return sorted(matches, key=lambda r: (r["entity"], -(float(r.get("novelty") or 0))))
+
+    # ---- API usage ----
+
+    def save_api_usage(self, rows: List[Dict]) -> None:
+        self._append_rows("API_usage", rows)
 
     # ---- Competitor map ----
 

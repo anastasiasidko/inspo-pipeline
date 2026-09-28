@@ -203,6 +203,11 @@ class InMemoryBackend(StorageBackend):
         ]
         return sorted(rows, key=lambda r: (r["entity"], -(r.get("novelty") or 0)))
 
+    # ---- API usage ----
+
+    def save_api_usage(self, rows: List[Dict]) -> None:
+        self.api_usage = getattr(self, "api_usage", []) + list(rows)
+
     # ---- Competitor map ----
 
     def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:

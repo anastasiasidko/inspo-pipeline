@@ -189,6 +189,11 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
+    def save_api_usage(self, rows: List[Dict]) -> None:
+        """One row per Anthropic call the app made (see pipeline/usage_log.py)."""
+        ...
+
+    @abstractmethod
     def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:
         """One row per competitor and channel: posts and posts per week in the window."""
         ...
