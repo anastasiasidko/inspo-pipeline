@@ -1,4 +1,4 @@
-# Inspo Pipeline — Competitor Monitoring via RSS
+# Inspo Pipeline — Competitor & Industry Monitoring
 
 A fixed-sequence pipeline that watches competitor sources, extracts structured findings, and periodically synthesizes them into a digest. This is **not** an autonomous agent — every step is deterministic and debuggable.
 
@@ -6,7 +6,7 @@ Shared by Anastasia and Ksenia through one Google Sheet — no more local `signa
 
 ## What It Does
 
-1. **Fetch** — Pulls new articles from RSS feeds
+1. **Fetch** — Pulls new posts and articles: RSS feeds/websites/podcasts/YouTube, plus LinkedIn and X (and any other platform, see below) through Apify scrapers
 2. **Dedup** — Drops already-collected items (checked in bulk once per run, not one lookup per item)
 3. **Extract** — LLM analyzes relevance, pulls structured findings (with quote verification)
 4. **Verify** — Programmatically checks quotes are real (anti-hallucination gate)
@@ -14,6 +14,17 @@ Shared by Anastasia and Ksenia through one Google Sheet — no more local `signa
 6. **Synthesize** — Generates a digest (handoff to content creation)
 
 Every finding, raw item, AI verdict, and digest is saved to a shared Google Sheet, not a local file.
+
+## What the app can do (beyond the core pipeline)
+
+- **Find channels automatically** (`pipeline/channel_discovery.py`): type a name, Claude (Sonnet 5 + web search) finds their website, newsletter, LinkedIn, X, etc. Every link is checked against the search results; sales pages are skipped; the person reviews before anything runs.
+- **Scrapers with fallback** (`adapters/apify_linkedin_adapter.py`, `adapters/scraper_registry.py`): LinkedIn and X have ordered lists of Apify actors — if one breaks, the next is used and the switch is reported. A platform with no scraper gets one looked up in Apify's Store automatically (spend-capped, saved in `scrapers.json`, marked unverified until it returns real data).
+- **Only typed names run**: the app collects only the competitors typed in that session, never every row in Settings.
+- **Newsletters with no public feed** (`adapters/newsletter_signup.py`, `adapters/gmail_client.py`, `pipeline/newsletter_routing.py`): a Subscribe button submits the signup form (never bypasses a CAPTCHA — those need a manual signup). The app's own Gmail login then creates a "Competitors" label and a filter so those emails skip the inbox. Setup: enable the Gmail API in the Google Cloud project, create a Desktop-app OAuth client, put its JSON path in `GOOGLE_GMAIL_OAUTH_CLIENT`, and click Allow once. While the Google app is in **Testing** mode, Google expires the login about every 7 days, so that click repeats weekly.
+- **Video approval** (`pipeline/media.py`): posts that are relevant and carry a video are listed with the video's length. Nothing is fetched until approved; then an Apify transcript actor (looked up in the Store, capped at $0.10 per run, falls back to the next actor) fetches it and the transcript goes through the normal extraction, quote check and digest under the post's author. Only videos, not images. The video field names are not yet confirmed against a real video post.
+- **Competitor map** (`pipeline/competitor_map.py`, tab `Competitor_map`): posts and posts per week per competitor and channel, counted from everything the scrapers returned before dedup and the relevance filter. No engagement. Computed and saved only for runs with a look-back of 28+ days; social channels at the per-profile post limit (30) are flagged.
+- **Suggested new voices** (`pipeline/suggestions.py`): a button (it uses the Anthropic search budget, so it is never automatic) proposes 5 people not already followed, each with a reason, a source page from the search results, and reach only when a search result states it. "Add to competitors" pre-fills the first screen; it never runs anything itself.
+- **Costs**: every run records a per-tool cost breakdown in the Runs tab (Anthropic extraction and digest, each Apify actor).
 
 ## Setup
 
@@ -97,22 +108,27 @@ Google's default quota is 100 read/write requests per 100 seconds per user. Ever
 
 ## Sheet Schema
 
-Tabs, created automatically on first connection (`storage.init()`):
+Tabs, created automatically on first connection (`storage.init()`). The exact headers live in `TAB_HEADERS` in `storage/sheets_backend.py`; the code tolerates the client_id column being absent on Runs/Findings/Digests.
 
 ```
-Settings   client_id, stream, kind, value, active, added_by, notes
-Rules      client_id, stream, rules_text, last_edited_by, last_edited_at
-Runs       run_id, client_id, stream, started_by, started_at, inputs_used, mode,
+Settings   competitor, frequency, channels, positioning, keywords  (people-facing)
+           client_id, stream, kind, value, active                  (technical, hidden)
+Rules      stream, rules_text, last_edited_by, last_edited_at, client_id
+           (a "general" row applies to every stream; each stream adds its own)
+Runs       run_id, stream, started_by, started_at, inputs_used, mode,
            sources_checked, collected, new_after_dedup, ai_findings, quote_verified,
-           in_digest, zero_result_sources, errors, est_cost, finished_at, status
+           in_digest, zero_result_sources, errors, est_cost, finished_at, status,
+           cost_breakdown
 Collected  run_id, stream, source, tool, url, published_at, author, title, text,
            text_complete, content_hash, collected_at
 AI_log     run_id, item_url, verdict, raw_ai_response, logged_at
-Findings   finding_id, run_id, client_id, stream, entity, signal_type, signal_category,
+Findings   finding_id, run_id, stream, entity, signal_type, signal_category,
            summary, evidence_quote, quote_verified, confidence, novelty, source, author,
            url, date, themes, value_claims, target_audience, terminology, other_note,
            created_at
-Digests    run_id, client_id, stream, date_range, digest_text, created_at
+Digests    run_id, stream, date_range, digest_text, created_at
+Competitor_map  run_id, created_at, competitor, channel, posts, posts_per_week,
+                window_days, at_post_limit   (28+ day runs only)
 ```
 
 Collected and AI_log rows older than 30 days are purged automatically at the end of every run (`cleanup_old_data`). Findings/Digests/Runs/Settings/Rules are kept forever.
@@ -164,9 +180,20 @@ inspo-pipeline/
 ├── .gitignore
 │
 ├── adapters/
-│   └── rss_adapter.py          # RSS fetch + full-text extraction
+│   ├── rss_adapter.py          # RSS fetch + full-text extraction
+│   ├── apify_linkedin_adapter.py  # Apify scrapers (LinkedIn, X) with fallback + video detection
+│   ├── scraper_registry.py     # Which scraper per platform; finds one in Apify's Store if none
+│   ├── feed_discovery.py       # Channel links -> collectable sources
+│   ├── newsletter_signup.py    # Subscribe-button form submission (never bypasses CAPTCHAs)
+│   └── gmail_client.py         # The app's own Gmail login: label + filter
 │
 ├── pipeline/
+│   ├── channel_discovery.py    # Find a person's channels (Claude + web search)
+│   ├── competitor_map.py       # Posts and cadence per channel (counting only)
+│   ├── media.py                # Video candidates + approved-video transcripts
+│   ├── suggestions.py          # 5 suggested new people to follow
+│   ├── newsletter_routing.py   # Pending newsletter subscriptions -> Gmail filter
+│   ├── costs.py                # Cost per model call (prices in config.yaml)
 │   ├── fetch.py                # Phase 1: fetch raw items
 │   ├── dedup.py                # Phase 2: drop duplicates (bulk index)
 │   ├── extract.py              # Phase 3: LLM extraction + verify quotes (batched writes)
@@ -191,11 +218,12 @@ inspo-pipeline/
 
 ## Known Limitations (v1)
 
-- RSS feeds only (web scraping / page-watching is v2)
+- Web pages without a feed are not watched (RSS/podcast/YouTube feeds, Apify platform scrapers and subscribed newsletters only)
 - Derived signals (messaging change, pricing trends) require time-series — banked for later
 - Semantic dedup (same news, many outlets, different wording) is v2
 - `--force-extract` is not supported against the Sheets backend yet (no cheap delete-by-item there) — filter the Findings tab manually if re-extraction is needed
-- No UI yet — a Streamlit app is the next planned phase, on top of this same engine
+- Newsletter double opt-in confirmation emails are not clicked automatically yet
+- Scrapers found automatically in Apify's Store are unverified until they return real data
 
 ## Testing
 
@@ -203,7 +231,10 @@ inspo-pipeline/
 - `test_sheets_backend.py` — Google Sheets backend contract (mocked `gspread`, no real Google account): idempotent tab creation, batched writes, multi-tenant filtering, dedup index, retention cleanup, run-details drill-down
 - `test_engine_e2e.py` — the full pipeline through `engine.run_stream()` against `InMemoryBackend` (mocked feed + mocked LLM): quote verification, idempotent re-runs, AI_log completeness, cost tracking
 
-Run any of them directly: `python test_engine_e2e.py`
+- `test_near_dedup.py`, `test_feed_discovery.py`, `test_channel_discovery.py`, `test_scraper_registry.py`, `test_apify_linkedin.py`, `test_newsletter_signup.py`, `test_gmail_routing.py` — the matching adapters and helpers, all offline
+- `test_monthly_features.py` — video detection and approval, competitor map, suggested voices, video transcript through the digest
+
+Run all with `python -m pytest -q` (one pre-existing `test_rerunning_is_idempotent` error is a test-file quirk, not a pipeline failure).
 
 ## Questions?
 
