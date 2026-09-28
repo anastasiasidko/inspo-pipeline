@@ -188,6 +188,11 @@ class StorageBackend(ABC):
     def get_digest(self, run_id: str) -> Optional[Dict]:
         ...
 
+    @abstractmethod
+    def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:
+        """One row per competitor and channel: posts and posts per week in the window."""
+        ...
+
     # ---- Troubleshooting / Results drill-down ----
 
     @abstractmethod

@@ -102,6 +102,60 @@ def _as_iso(v) -> Optional[str]:
     return None
 
 
+_VIDEO_URL_FIELDS = ("url", "videoUrl", "video_url", "src", "playbackUrl", "mediaUrl", "contentUrl", "media_url_https")
+_VIDEO_SECONDS_FIELDS = (("durationSeconds", 1), ("duration_seconds", 1), ("duration", 1), ("length", 1),
+                         ("durationMs", 0.001), ("duration_millis", 0.001))
+
+
+def _video_of(item: Dict) -> Optional[Dict]:
+    """{"url", "duration_seconds"} when the post carries a video, else None. Actors name this field
+    differently (LinkedIn "postVideo"/"video", X "extendedEntities.media[type=video]"), so look for a
+    key with "video" in its name or a media entry whose type is video. Missing values stay None."""
+    def seconds(node: Dict) -> Optional[float]:
+        for holder in (node, node.get("video_info") if isinstance(node.get("video_info"), dict) else {}):
+            for field, scale in _VIDEO_SECONDS_FIELDS:
+                v = holder.get(field)
+                if isinstance(v, (int, float)) and v > 0:
+                    return round(v * scale, 1)
+        return None
+
+    def link(node: Dict) -> Optional[str]:
+        for field in _VIDEO_URL_FIELDS:
+            v = node.get(field)
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+        variants = (node.get("video_info") or {}).get("variants") if isinstance(node.get("video_info"), dict) else None
+        for variant in variants or []:
+            if isinstance(variant, dict) and str(variant.get("url", "")).startswith("http"):
+                return variant["url"]
+        return None
+
+    def walk(node, under_video_key: bool, depth: int = 0) -> Optional[Dict]:
+        if depth > 4:
+            return None
+        if isinstance(node, str):
+            return {"url": node, "duration_seconds": None} if under_video_key and node.startswith("http") else None
+        if isinstance(node, list):
+            for child in node:
+                found = walk(child, under_video_key, depth + 1)
+                if found:
+                    return found
+            return None
+        if not isinstance(node, dict):
+            return None
+        kind = str(node.get("type") or node.get("mediaType") or "").lower()
+        url, secs = link(node), seconds(node)
+        if kind == "video" or (under_video_key and (url or secs)):
+            return {"url": url, "duration_seconds": secs}
+        for key, child in node.items():
+            found = walk(child, "video" in str(key).lower(), depth + 1)
+            if found:
+                return found
+        return None
+
+    return walk(item, False)
+
+
 def normalize_post(item: Dict, source_name: str, actor_id: str) -> Optional[Dict]:
     text = _as_text(_first(item, TEXT_KEYS))
     url = _first(item, URL_KEYS)
@@ -110,13 +164,19 @@ def normalize_post(item: Dict, source_name: str, actor_id: str) -> Optional[Dict
     author = item.get("author")
     author_name = author.get("name") if isinstance(author, dict) else (author if isinstance(author, str) else None)
     title = text.split("\n", 1)[0][:90]
-    return {
+    video = _video_of(item)
+    if video:
+        video["url"] = video["url"] or url  # no direct file link: fall back to the post itself
+    post = {
         "title": title, "source_url": url, "text": text, "source_name": source_name,
         "published_date": _as_iso(_first(item, DATE_KEYS)), "author": author_name or "",
         "text_complete": True, "tool": f"Apify: {actor_id}",
         "content_hash": hashlib.sha256((title + text).encode("utf-8")).hexdigest(),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
+    if video:
+        post["video"] = video
+    return post
 
 
 def _run_actor(actor_id: str, actor_input: Dict, token: str, max_charge: float, timeout: int):

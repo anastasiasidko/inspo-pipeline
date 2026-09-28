@@ -218,6 +218,7 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
         "empty_articles": 0,
         "errors": 0,
         "est_cost": 0.0,
+        "verified_urls": [],  # posts that produced at least one quote-verified finding
     }
 
     items = list(raw_items)
@@ -333,6 +334,8 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
                 stats["signals_extracted"] += 1
                 if verified:
                     stats["quote_verified_count"] += 1
+                    if source_url not in stats["verified_urls"]:
+                        stats["verified_urls"].append(source_url)
                 finding_verdicts.append(f"{signal_type} (quote {'verified' if verified else 'FAILED'})")
             except Exception as e:
                 logger.error(f"[{source_name}] Failed to process finding: {e}")

@@ -68,6 +68,8 @@ TAB_HEADERS = {
         "target_audience", "terminology", "other_note", "created_at",
     ],
     "Digests": ["run_id", "stream", "date_range", "digest_text", "created_at"],
+    "Competitor_map": ["run_id", "created_at", "competitor", "channel", "posts", "posts_per_week",
+                       "window_days", "at_post_limit"],
 }
 
 DEFAULT_CLIENT = "ksenia"
@@ -474,6 +476,16 @@ class SheetsBackend(StorageBackend):
             and float(row.get("confidence") or 0) >= min_confidence
         ]
         return sorted(matches, key=lambda r: (r["entity"], -(float(r.get("novelty") or 0))))
+
+    # ---- Competitor map ----
+
+    def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:
+        now = _now_iso()
+        self._append_rows("Competitor_map", [{
+            "run_id": run_id, "created_at": now, "competitor": r["competitor"], "channel": r["channel"],
+            "posts": r["posts"], "posts_per_week": r["per_week"], "window_days": window_days,
+            "at_post_limit": "Y" if r.get("capped") else "",
+        } for r in rows])
 
     # ---- Digests ----
 

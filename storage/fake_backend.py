@@ -202,6 +202,12 @@ class InMemoryBackend(StorageBackend):
         ]
         return sorted(rows, key=lambda r: (r["entity"], -(r.get("novelty") or 0)))
 
+    # ---- Competitor map ----
+
+    def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:
+        self.competitor_map = getattr(self, "competitor_map", []) + [
+            {**r, "run_id": run_id, "client_id": client_id, "window_days": window_days} for r in rows]
+
     # ---- Digests ----
 
     def save_digest(self, client_id: str, run_id: str, stream: str,

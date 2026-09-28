@@ -157,17 +157,19 @@ def _input_schema(username: str, name: str, token: str) -> Optional[str]:
         return None
 
 
-def _write_template(schema: str, sample_url: str, platform: str) -> Optional[Dict]:
+def _write_template(schema: str, sample_url: str, platform: str, task: Optional[str] = None) -> Optional[Dict]:
     """Ask Claude to turn the scraper's input schema into a reusable input template."""
     import anthropic
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return None
+    task = (task or "scrapes the most recent public posts of ONE {platform} profile, for example {url}"
+            ).format(platform=platform, url=sample_url)
     prompt = f"""An Apify scraper has this input schema:
 {schema[:6000]}
 
-Write the JSON input that scrapes the most recent public posts of ONE {platform} profile, for example {sample_url}.
-Use these placeholders exactly where the value belongs: "{{url}}" (profile URL), "{{handle}}" (username without @),
+Write the JSON input that {task}.
+Use these placeholders exactly where the value belongs: "{{url}}" (the URL), "{{handle}}" (username without @),
 "{{max_items}}" (maximum posts) and "{{days}}" (look-back days). Always keep the placeholders inside double
 quotes, even where the field is a number, so the output stays valid JSON.
 Fill only fields the scraper needs; leave optional fields out. Never enable login, cookies or follower/comment scraping.

@@ -12,7 +12,7 @@ Two entry points, per the brief:
 import logging
 from typing import Dict, List, Optional
 
-from pipeline import fetch, dedup, extract, score, synthesis
+from pipeline import fetch, dedup, extract, score, synthesis, competitor_map, media
 from storage.backend import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,27 @@ def _within_lookback(items: List[Dict], lookback_days: int) -> List[Dict]:
     return kept
 
 
+def _config_with_rules(storage: StorageBackend, client_id: str, stream: str, lookback_days: int,
+                        config: Optional[dict] = None) -> dict:
+    """Local config plus the rules from the Rules tab: general rules first, then the stream's own."""
+    from config import load_local_config  # local import avoids a cycle with main.py's CLI use
+    config = {**(config or load_local_config(stream)), "digest_window_days": lookback_days}
+    rule_parts = [
+        (r["rules_text"] or "").strip()
+        for r in (storage.get_rules(client_id, "general"), storage.get_rules(client_id, stream))
+        if r
+    ]
+    rule_parts = [p for p in rule_parts if p]
+    if rule_parts:
+        config = {**config, "relevance_ruleset": "\n\n".join(rule_parts)}
+    elif "relevance_ruleset" not in config:
+        raise ValueError(
+            f"No rules found for stream={stream!r} — save one in the Rules tab "
+            f"first, or set relevance_ruleset in the local config for testing."
+        )
+    return config
+
+
 def run_stream(
     stream: str,
     inputs: List[str],
@@ -119,30 +140,13 @@ def run_stream(
 
     Returns: {"run_id": str, "digest": str, "stats": dict}
     """
-    from config import load_local_config  # local import avoids a cycle with main.py's CLI use
-
     storage = storage or _default_storage()
     storage.init()
 
-    config = {**(config or load_local_config(stream)), "digest_window_days": lookback_days}
+    config = _config_with_rules(storage, client_id, stream, lookback_days, config)
 
     sources = _resolve_sources(storage, client_id, stream, inputs, mode)
     inputs_used = [s["feed_url"] for s in sources]
-
-    # General rules apply to every stream; each stream adds its own on top.
-    rule_parts = [
-        (r["rules_text"] or "").strip()
-        for r in (storage.get_rules(client_id, "general"), storage.get_rules(client_id, stream))
-        if r
-    ]
-    rule_parts = [p for p in rule_parts if p]
-    if rule_parts:
-        config = {**config, "relevance_ruleset": "\n\n".join(rule_parts)}
-    elif "relevance_ruleset" not in config:
-        raise ValueError(
-            f"No rules found for stream={stream!r} — save one in the Rules tab "
-            f"first, or set relevance_ruleset in the local config for testing."
-        )
 
     run_id = storage.start_run(client_id, stream, started_by, inputs_used, mode)
     logger.info(f"Run {run_id} started — stream={stream}, mode={mode}, sources={len(sources)}")
@@ -166,6 +170,14 @@ def run_stream(
             limit=limit, dry_run=dry_run,
         )
         errors += extract_result["errors"]
+
+        from adapters.apify_linkedin_adapter import DEFAULT_MAX_POSTS
+        map_rows = competitor_map.build_map(sources, fetch_result["items"], lookback_days, DEFAULT_MAX_POSTS)
+        map_text = competitor_map.format_map(map_rows, lookback_days, DEFAULT_MAX_POSTS)
+        is_monthly = lookback_days >= competitor_map.MONTHLY_MIN_DAYS
+        if is_monthly and not dry_run:
+            storage.save_competitor_map(client_id, run_id, lookback_days, map_rows)
+        videos = media.video_candidates(dedup_result["new_items"], extract_result.get("verified_urls"))
 
         score_result = score.run_scoring_phase(
             storage, client_id, stream,
@@ -229,7 +241,8 @@ def run_stream(
         f"verified={stats['quote_verified']}, errors={stats['errors']}"
     )
 
-    return {"run_id": run_id, "digest": digest, "stats": stats, "notices": fetch_result.get("notices", [])}
+    return {"run_id": run_id, "digest": digest, "stats": stats, "notices": fetch_result.get("notices", []),
+            "competitor_map": map_text if is_monthly else "", "video_candidates": videos}
 
 
 def get_run_details(run_id: str, storage: Optional[StorageBackend] = None) -> Dict:
@@ -242,3 +255,45 @@ def get_run_details(run_id: str, storage: Optional[StorageBackend] = None) -> Di
     """
     storage = storage or _default_storage()
     return storage.get_run_details(run_id)
+
+
+
+def run_video(candidate: Dict, transcript: str, stream: str, lookback_days: int, started_by: str,
+              client_id: str = DEFAULT_CLIENT_ID, storage: Optional[StorageBackend] = None,
+              config: Optional[dict] = None) -> Dict:
+    """
+    An approved video's transcript goes through the same extraction, quote check and digest as any
+    other text, filed under the post's author. -> {"run_id", "digest", "stats"}. The digest covers the
+    whole window again, now including what was said in the video.
+    """
+    storage = storage or _default_storage()
+    storage.init()
+    config = _config_with_rules(storage, client_id, stream, lookback_days, config)
+    run_id = storage.start_run(client_id, stream, started_by, [candidate["video_url"]], "video")
+    try:
+        item = {
+            "title": f"Video by {candidate['author']}", "source_url": candidate["video_url"],
+            "text": transcript, "source_name": f"{candidate['author']} — video",
+            "author": candidate["author"], "published_date": candidate.get("published_date") or "",
+            "text_complete": True, "tool": "Apify: video transcript",
+        }
+        extract_result = extract.run_extraction_phase(config, storage, client_id, run_id, [item])
+        score.run_scoring_phase(storage, client_id, stream,
+                                scoring_direction=config.get("scoring_direction", "novelty"))
+        digest_usage: dict = {}
+        digest = synthesis.run_synthesis_phase(
+            config, storage, client_id, run_id, stream,
+            run_coverage={"sources_checked": 1, "items_collected": 1,
+                          "findings_extracted": extract_result["signals_extracted"]},
+            usage_out=digest_usage)
+        stats = {"sources_checked": 1, "collected": 1, "new_after_dedup": 1,
+                 "ai_findings": extract_result["signals_extracted"],
+                 "quote_verified": extract_result["quote_verified_count"],
+                 "in_digest": extract_result["quote_verified_count"], "errors": extract_result["errors"],
+                 "est_cost": round(extract_result.get("est_cost", 0.0) + digest_usage.get("cost", 0.0), 4),
+                 "status": "done"}
+    except Exception:
+        storage.finish_run(run_id, {"errors": 1, "status": "failed"})
+        raise
+    storage.finish_run(run_id, stats)
+    return {"run_id": run_id, "digest": digest, "stats": stats}
