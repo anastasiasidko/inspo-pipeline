@@ -4,7 +4,7 @@ Local test for SheetsBackend — no real Google account or network needed.
 Mocks gspread entirely (service_account, the Spreadsheet, and every Worksheet)
 so the Sheets-specific CONTRACT gets proven without ever touching a real
 sheet: idempotent tab creation, batched writes (the single most important
-property given Google's rate limits), multi-tenant filtering, dedup-index
+property given Google's rate limits), dedup-index
 round-tripping, and retention cleanup.
 
 Run: python3 test_sheets_backend.py
@@ -111,7 +111,7 @@ def make_backend(existing_tabs=None):
 
 
 def test_init_creates_missing_tabs_idempotently():
-    print("TEST: init() creates all 7 tabs when none exist, skips when they do")
+    print("TEST: init() creates all the tabs when none exist, skips when they do")
 
     backend, spreadsheet = make_backend(existing_tabs={})
     backend.init()
@@ -156,31 +156,33 @@ def test_save_collected_items_is_one_batched_call():
     print()
 
 
-def test_settings_and_rules_filter_by_client_and_stream():
-    print("TEST: get_saved_items / get_rules filter correctly out of a mixed-tenant sheet")
+def test_settings_and_rules_in_a_single_app_sheet():
+    print("TEST: saved competitors and the two rules cells work with no stream/client columns")
 
     backend, spreadsheet = make_backend(existing_tabs={})
     backend.init()
+    assert "stream" not in spreadsheet._tabs["Settings"]._headers
+    assert all("stream" not in ws._headers and "client_id" not in ws._headers for ws in spreadsheet._tabs.values())
 
-    backend.add_saved_item("ksenia", "competitor_monitoring", "competitor",
-                            "https://a.test/feed", "anastasia", notes="Competitor A")
-    backend.add_saved_item("ksenia", "industry_trends", "topic", "AI", "ksenia")
-    backend.add_saved_item("other_client", "competitor_monitoring", "competitor",
-                            "https://b.test/feed", "someone")
+    backend.upsert_competitor("ksenia", "competitor_monitoring", "Val Nelson", "LinkedIn: https://x/val")
+    backend.upsert_competitor("ksenia", "competitor_monitoring", "Val Nelson", "LinkedIn: https://x/val2")  # in place
+    backend.upsert_competitor("ksenia", "competitor_monitoring", "Ana", "X: https://x.com/ana")
+    backend.set_saved_item_active("ksenia", "competitor_monitoring", "Ana", False)
+    active = backend.get_saved_items("ksenia", "competitor_monitoring")
+    assert [r["competitor"] for r in active] == ["Val Nelson"] and active[0]["channels"] == "LinkedIn: https://x/val2"
+    assert len(backend.get_saved_items("ksenia", "competitor_monitoring", active_only=False)) == 2
+    print("  PASS — competitors are upserted by name and can be switched off")
 
-    ksenia_competitors = backend.get_saved_items("ksenia", "competitor_monitoring")
-    assert len(ksenia_competitors) == 1, ksenia_competitors
-    assert ksenia_competitors[0]["value"] == "https://a.test/feed"
-    print("  PASS — get_saved_items only returns this client_id+stream's rows")
-
+    backend.save_rules("ksenia", "general", "Three circles", "anastasia")
     backend.save_rules("ksenia", "competitor_monitoring", "Flag pricing changes", "anastasia")
-    backend.save_rules("other_client", "competitor_monitoring", "Something else", "someone")
     backend.save_rules("ksenia", "competitor_monitoring", "Flag pricing changes v2", "ksenia")
     rules = backend.get_rules("ksenia", "competitor_monitoring")
-    assert rules["rules_text"] == "Flag pricing changes v2"
-    assert rules["last_edited_by"] == "ksenia"
-    assert len(spreadsheet._tabs["Rules"].get_all_records()) == 2, "one row per stream, edited in place"
-    print("  PASS — get_rules only returns this client_id+stream's rules")
+    assert rules["rules_text"] == "Flag pricing changes v2" and rules["last_edited_by"] == "ksenia"
+    assert backend.get_rules("ksenia", "general")["rules_text"] == "Three circles"
+    assert backend.get_rules("ksenia", "industry_trends") is None
+    rows = spreadsheet._tabs["Rules"].get_all_records()
+    assert [r["part"] for r in rows] == ["General", "Competitors"], "one row per part, edited in place"
+    print("  PASS — the General and Competitors rules are one cell each")
     print()
 
 
@@ -216,8 +218,8 @@ def test_cleanup_purges_only_collected_and_ai_log():
 
     collected_ws = spreadsheet._tabs["Collected"]
     collected_ws.append_rows([
-        ["run-old", "s", "src", "tool", "url1", "d", "a", "t", "text", "Y", "h1", old_ts],
-        ["run-new", "s", "src", "tool", "url2", "d", "a", "t", "text", "Y", "h2", new_ts],
+        ["run-old", "src", "tool", "url1", "d", "a", "t", "text", "Y", "h1", old_ts],
+        ["run-new", "src", "tool", "url2", "d", "a", "t", "text", "Y", "h2", new_ts],
     ])
     ai_log_ws = spreadsheet._tabs["AI_log"]
     ai_log_ws.append_rows([
@@ -226,7 +228,7 @@ def test_cleanup_purges_only_collected_and_ai_log():
     ])
     findings_ws = spreadsheet._tabs["Findings"]
     findings_ws.append_rows([[
-        "f1", "run-old", "s", "Entity", "type", "cat", "summary", "quote",
+        "f1", "run-old", "Entity", "type", "cat", "summary", "quote",
         "Y", "0.9", "0.5", "src", "auth", "url1", "date", "[]", "[]", "[]", "[]", "", old_ts,
     ]])
 
@@ -278,7 +280,7 @@ if __name__ == "__main__":
 
     test_init_creates_missing_tabs_idempotently()
     test_save_collected_items_is_one_batched_call()
-    test_settings_and_rules_filter_by_client_and_stream()
+    test_settings_and_rules_in_a_single_app_sheet()
     test_dedup_index_round_trips()
     test_cleanup_purges_only_collected_and_ai_log()
     test_get_run_details_funnel_and_zero_twice_in_a_row()

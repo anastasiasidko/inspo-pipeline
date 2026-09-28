@@ -42,46 +42,36 @@ logger = logging.getLogger(__name__)
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 TAB_HEADERS = {
-    # First five columns are for people; the last five are technical (the
-    # Sheet hides them) — the pipeline filters on client_id/stream/active and
-    # collects from `value` (a feed or profile URL, or the name until one is set).
-    "Settings": [
-        "competitor", "frequency", "channels", "positioning", "keywords",
-        "client_id", "stream", "kind", "value", "active",
-    ],
-    "Rules": ["stream", "rules_text", "last_edited_by", "last_edited_at", "client_id"],
+    # One spreadsheet = one Inspo app for one client, so there is no stream or client column anywhere.
+    "Settings": ["competitor", "frequency", "channels", "positioning", "keywords", "active"],
+    # Two cells: "General" (the topics and scope that matter) and "Competitors" (what to flag).
+    "Rules": ["part", "rules_text", "last_edited_by", "last_edited_at"],
     "Runs": [
-        "run_id", "stream", "started_by", "started_at", "inputs_used", "mode",
+        "run_id", "started_by", "started_at", "inputs_used", "mode",
         "sources_checked", "collected", "new_after_dedup", "ai_findings", "quote_verified",
         "in_digest", "zero_result_sources", "errors", "est_cost", "finished_at", "status",
         "cost_breakdown",
     ],
     "Collected": [
-        "run_id", "stream", "source", "tool", "url", "published_at", "author", "title",
+        "run_id", "source", "tool", "url", "published_at", "author", "title",
         "text", "text_complete", "content_hash", "collected_at",
     ],
     "AI_log": ["run_id", "item_url", "verdict", "raw_ai_response", "logged_at"],
     "Findings": [
-        "finding_id", "run_id", "stream", "entity", "signal_type",
+        "finding_id", "run_id", "entity", "signal_type",
         "signal_category", "summary", "evidence_quote", "quote_verified", "confidence",
         "novelty", "source", "author", "url", "date", "themes", "value_claims",
         "target_audience", "terminology", "other_note", "created_at",
     ],
-    "Digests": ["run_id", "stream", "date_range", "digest_text", "created_at"],
+    "Digests": ["run_id", "date_range", "digest_text", "created_at"],
     # One row per channel (posts, cadence) and, for runs with #map, one row per similar person found
     # (channel = "Similar voice", the last four columns filled).
     "Competitor_map": ["run_id", "created_at", "competitor", "channel", "posts", "posts_per_week",
                        "window_days", "at_post_limit", "similar_person", "why_similar", "reach", "source_url"],
 }
 
-DEFAULT_CLIENT = "ksenia"
-
-
-def _same_client(row: Dict, client_id: str) -> bool:
-    """Runs/Findings/Digests may have no client_id column (there is one client);
-    a missing column counts as a match."""
-    return row.get("client_id", client_id) in ("", client_id)
-
+# The engine still says "stream"; in the sheet those are the two Rules cells.
+RULE_PARTS = {"general": "General", "competitor_monitoring": "Competitors"}
 
 MAX_TEXT_CHARS = 45_000  # per the brief: Collected.text is cut at 45,000 chars
 
@@ -206,18 +196,14 @@ class SheetsBackend(StorageBackend):
     # ---- Settings ----
 
     def get_saved_items(self, client_id: str, stream: str, active_only: bool = True) -> List[Dict]:
-        rows = self._read_rows("Settings")
-        return [
-            row for row in rows
-            if row["client_id"] == client_id and row["stream"] == stream
-            and (not active_only or _as_bool(row.get("active")))
-        ]
+        """(client_id and stream are part of the engine's interface; a sheet holds only one of each.)"""
+        return [row for row in self._read_rows("Settings")
+                if (row.get("competitor") or "").strip() and (not active_only or _as_bool(row.get("active")))]
 
     def add_saved_item(self, client_id: str, stream: str, kind: str, value: str,
                         added_by: str, notes: str = "") -> None:
         self._append_rows("Settings", [{
-            "client_id": client_id, "stream": stream, "kind": kind, "value": value,
-            "active": _bool_as_cell(True), "competitor": notes,
+            "competitor": notes or value, "frequency": "weekly", "channels": value, "active": _bool_as_cell(True),
         }])
 
     def upsert_competitor(self, client_id: str, stream: str, name: str, channels_text: str,
@@ -225,8 +211,7 @@ class SheetsBackend(StorageBackend):
         ws = self._ws("Settings")
         col = {h: i for i, h in enumerate(self._headers("Settings"))}
         for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
-            if (row[col["client_id"]] == client_id and row[col["stream"]] == stream
-                    and row[col["competitor"]] == name):
+            if row[col["competitor"]] == name:
                 _with_backoff(ws.batch_update)([
                     {"range": f"{_col_letter(col['channels'])}{row_num}", "values": [[channels_text]]},
                     {"range": f"{_col_letter(col['frequency'])}{row_num}", "values": [[frequency]]},
@@ -234,42 +219,38 @@ class SheetsBackend(StorageBackend):
                 ])
                 return
         self._append_rows("Settings", [{
-            "competitor": name, "frequency": frequency, "channels": channels_text,
-            "client_id": client_id, "stream": stream, "kind": "competitor", "value": name, "active": "Y"}])
+            "competitor": name, "frequency": frequency, "channels": channels_text, "active": "Y"}])
 
     def set_saved_item_active(self, client_id: str, stream: str, value: str, active: bool) -> None:
         ws = self._ws("Settings")
-        headers = self._headers("Settings")
-        rows = _with_backoff(ws.get_all_values)()
-        col_idx = {h: i for i, h in enumerate(headers)}
-        for row_num, row in enumerate(rows[1:], start=2):
-            if (row[col_idx["client_id"]] == client_id and row[col_idx["stream"]] == stream
-                    and row[col_idx["value"]] == value):
+        col_idx = {h: i for i, h in enumerate(self._headers("Settings"))}
+        for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
+            if value in (row[col_idx["competitor"]], row[col_idx["channels"]]):
                 _with_backoff(ws.update_cell)(row_num, col_idx["active"] + 1, _bool_as_cell(active))
                 return
 
     # ---- Rules ----
 
     def get_rules(self, client_id: str, stream: str) -> Optional[Dict]:
-        rows = self._read_rows("Rules")
-        matches = [r for r in rows if r["client_id"] == client_id and r["stream"] == stream]
+        part = RULE_PARTS.get(stream, stream).lower()
+        matches = [r for r in self._read_rows("Rules") if str(r.get("part", "")).strip().lower() == part]
         return matches[-1] if matches else None  # most recently appended wins
 
     def save_rules(self, client_id: str, stream: str, rules_text: str, edited_by: str) -> None:
-        # One row per stream, edited in place, so a stream never has two cells.
+        # One row per part, edited in place, so a part never has two cells.
         # Older text stays recoverable through Google Sheets' own version history.
+        part = RULE_PARTS.get(stream, stream)
         new_values = {"rules_text": rules_text, "last_edited_by": edited_by,
                       "last_edited_at": _now_iso()}
         ws = self._ws("Rules")
-        headers = self._headers("Rules")
-        col = {h: i for i, h in enumerate(headers)}
+        col = {h: i for i, h in enumerate(self._headers("Rules"))}
         for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
-            if row[col["client_id"]] == client_id and row[col["stream"]] == stream:
+            if row[col["part"]].strip().lower() == part.lower():
                 _with_backoff(ws.batch_update)([
                     {"range": f"{_col_letter(col[k])}{row_num}", "values": [[v]]}
                     for k, v in new_values.items()])
                 return
-        self._append_rows("Rules", [{"client_id": client_id, "stream": stream, **new_values}])
+        self._append_rows("Rules", [{"part": part, **new_values}])
 
     # ---- Runs ----
 
@@ -277,8 +258,7 @@ class SheetsBackend(StorageBackend):
                    inputs_used: List[str], mode: str) -> str:
         run_id = f"{stream}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         self._append_rows("Runs", [{
-            "run_id": run_id, "client_id": client_id, "stream": stream,
-            "started_by": started_by, "started_at": _now_iso(),
+            "run_id": run_id, "started_by": started_by, "started_at": _now_iso(),
             "inputs_used": _as_json_cell(inputs_used), "mode": mode,
             "sources_checked": "", "collected": "", "new_after_dedup": "",
             "ai_findings": "", "quote_verified": "", "in_digest": "",
@@ -327,9 +307,7 @@ class SheetsBackend(StorageBackend):
 
     def list_runs(self, client_id: str, stream: Optional[str] = None) -> List[Dict]:
         rows = self._read_rows("Runs")
-        matches = [r for r in rows if _same_client(r, client_id)]
-        if stream is not None:
-            matches = [r for r in matches if r["stream"] == stream]
+        matches = list(rows)
         for row in matches:
             row["zero_result_sources"] = _from_json_cell(row.get("zero_result_sources"))
         return sorted(matches, key=lambda r: r["started_at"])
@@ -339,14 +317,8 @@ class SheetsBackend(StorageBackend):
     def get_dedup_index(self, client_id: str, stream: str) -> DedupIndex:
         from storage.backend import normalize_title
 
-        run_ids = {
-            r["run_id"] for r in self._read_rows("Runs")
-            if _same_client(r, client_id) and r["stream"] == stream
-        }
         index = DedupIndex()
         for row in self._read_rows("Collected"):
-            if row["run_id"] not in run_ids:
-                continue
             if row.get("content_hash"):
                 index.content_hashes.add(row["content_hash"])
             if row.get("url"):
@@ -362,8 +334,7 @@ class SheetsBackend(StorageBackend):
         for item in items:
             text = item.get("text", "")
             rows.append({
-                "run_id": run_id, "stream": stream,
-                "source": item.get("source_name", ""),
+                "run_id": run_id, "source": item.get("source_name", ""),
                 "tool": item.get("tool", "RSS reader"),
                 "url": item.get("source_url", ""),
                 "published_at": item.get("published_date", ""),
@@ -401,7 +372,7 @@ class SheetsBackend(StorageBackend):
             finding_id = f"{run_id}-{i + 1}"
             ids.append(finding_id)
             rows.append({
-                "finding_id": finding_id, "run_id": run_id, "client_id": client_id, "stream": stream,
+                "finding_id": finding_id, "run_id": run_id,
                 "entity": finding.get("entity", ""),
                 "signal_type": finding.get("signal_type", ""),
                 "signal_category": finding.get("signal_category") or "",
@@ -428,8 +399,7 @@ class SheetsBackend(StorageBackend):
         rows = self._read_rows("Findings")
         return [
             row for row in rows
-            if _same_client(row, client_id) and row["stream"] == stream
-            and (row.get("novelty") == "" or row.get("novelty") is None)
+            if (row.get("novelty") == "" or row.get("novelty") is None)
         ]
 
     def update_findings_novelty_batch(self, updates: List[Tuple[str, float]]) -> None:
@@ -464,8 +434,7 @@ class SheetsBackend(StorageBackend):
         rows = self._read_rows("Findings")
         return sum(
             1 for row in rows
-            if _same_client(row, client_id) and row["stream"] == stream
-            and row["entity"] == entity and row["signal_type"] == signal_type
+            if row["entity"] == entity and row["signal_type"] == signal_type
             and row.get("created_at", "") >= since_iso
             and row["finding_id"] != exclude_finding_id
         )
@@ -477,8 +446,7 @@ class SheetsBackend(StorageBackend):
         rows = self._read_rows("Findings")
         matches = [
             row for row in rows
-            if _same_client(row, client_id) and row["stream"] == stream
-            and _as_bool(row.get("quote_verified"))
+            if _as_bool(row.get("quote_verified"))
             and row.get("created_at", "") >= cutoff
             and float(row.get("confidence") or 0) >= min_confidence
         ]
@@ -500,8 +468,7 @@ class SheetsBackend(StorageBackend):
     def save_digest(self, client_id: str, run_id: str, stream: str,
                      date_range: str, digest_text: str) -> None:
         self._append_rows("Digests", [{
-            "run_id": run_id, "client_id": client_id, "stream": stream,
-            "date_range": date_range, "digest_text": digest_text, "created_at": _now_iso(),
+            "run_id": run_id, "date_range": date_range, "digest_text": digest_text, "created_at": _now_iso(),
         }])
 
     def get_digest(self, run_id: str) -> Optional[Dict]:
@@ -526,7 +493,7 @@ class SheetsBackend(StorageBackend):
             by_source.setdefault(item.get("source", "unknown"), []).append(item)
 
         prior_runs = [
-            r for r in self.list_runs(run.get("client_id", DEFAULT_CLIENT), run["stream"])
+            r for r in self.list_runs("", None)
             if r["started_at"] < run["started_at"]
         ]
         prior_zero = set(prior_runs[-1]["zero_result_sources"]) if prior_runs else set()

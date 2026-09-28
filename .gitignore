@@ -67,3 +67,6 @@ htmlcov/
 # Gmail OAuth: the app's own client secret and cached login token
 gmail_token.json
 *gmail*client*.json
+
+# Local backups of the Google Sheet taken before restructuring it
+backups/

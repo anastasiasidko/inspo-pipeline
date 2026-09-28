@@ -1,8 +1,8 @@
-# Inspo Pipeline — Competitor & Industry Monitoring
+# Inspo Competitors — Competitor Monitoring
 
 A fixed-sequence pipeline that watches competitor sources, extracts structured findings, and periodically synthesizes them into a digest. This is **not** an autonomous agent — every step is deterministic and debuggable.
 
-Shared by Anastasia and Ksenia through one Google Sheet — no more local `signals.db`. The engine (all the logic) never knows which storage it's talking to or which screen is calling it; see **Architecture** below.
+Shared by Anastasia and Ksenia through one Google Sheet, **"Inspo competitors"**. Each part of Inspo is its own app with its own spreadsheet; this one is only about competitors, so the sheet has no stream or client columns. The engine (all the logic) never knows which storage it's talking to or which screen is calling it; see **Architecture** below.
 
 ## What It Does
 
@@ -110,25 +110,24 @@ Google's default quota is 100 read/write requests per 100 seconds per user. Ever
 
 ## Sheet Schema
 
-Tabs, created automatically on first connection (`storage.init()`). The exact headers live in `TAB_HEADERS` in `storage/sheets_backend.py`; the code tolerates the client_id column being absent on Runs/Findings/Digests.
+Tabs, created automatically on first connection (`storage.init()`). The exact headers live in `TAB_HEADERS` in `storage/sheets_backend.py`. One spreadsheet is one app for one client, so there are no stream or client_id columns (the engine's `stream`/`client_id` arguments are accepted and ignored by the Sheets backend).
 
 ```
-Settings   competitor, frequency, channels, positioning, keywords  (people-facing)
-           client_id, stream, kind, value, active                  (technical, hidden)
-Rules      stream, rules_text, last_edited_by, last_edited_at, client_id
-           (a "general" row applies to every stream; each stream adds its own)
-Runs       run_id, stream, started_by, started_at, inputs_used, mode,
+Settings   competitor, frequency, channels, positioning, keywords, active
+Rules      part, rules_text, last_edited_by, last_edited_at
+           (two cells: "General" = the topics and scope that matter, "Competitors" = what to flag)
+Runs       run_id, started_by, started_at, inputs_used, mode,
            sources_checked, collected, new_after_dedup, ai_findings, quote_verified,
            in_digest, zero_result_sources, errors, est_cost, finished_at, status,
            cost_breakdown
-Collected  run_id, stream, source, tool, url, published_at, author, title, text,
+Collected  run_id, source, tool, url, published_at, author, title, text,
            text_complete, content_hash, collected_at
 AI_log     run_id, item_url, verdict, raw_ai_response, logged_at
-Findings   finding_id, run_id, stream, entity, signal_type, signal_category,
+Findings   finding_id, run_id, entity, signal_type, signal_category,
            summary, evidence_quote, quote_verified, confidence, novelty, source, author,
            url, date, themes, value_claims, target_audience, terminology, other_note,
            created_at
-Digests    run_id, stream, date_range, digest_text, created_at
+Digests    run_id, date_range, digest_text, created_at
 Competitor_map  run_id, created_at, competitor, channel, posts, posts_per_week,
                 window_days, at_post_limit, similar_person, why_similar, reach,
                 source_url   (28+ day runs, or any run with #map)
@@ -142,10 +141,9 @@ Only technical/cost settings live here now — model choice, the signal-type tax
 
 ## Extending This
 
-**Adding another stream** (industry trends, social listening, etc.)
-- Create `config_industry_trends.yaml` — same code, different local config
-- Add sources to the Settings tab with `stream="industry_trends"` and write that stream's ruleset in the Rules tab
-- No code changes needed unless the stream needs a non-RSS adapter
+**Another part of Inspo** (industry trends, social listening, …) is a separate app with its own spreadsheet, not another stream in this one. The rules that were written for those parts were removed from this sheet and saved in `backups/rules-for-other-inspo-parts.md` (local, not in Git).
+
+**Restructuring an existing sheet**: `python migrate_sheet_to_competitors_only.py` (one-time, idempotent) backs up every tab to `backups/`, drops the stream/client columns, keeps only the General and Competitors rules, removes the empty default tab and renames the spreadsheet.
 
 **Adding non-RSS sources** (newsletters, job pages, web pages)
 - `Collected.tool` already exists for this; add new adapters in `adapters/`
@@ -232,7 +230,7 @@ inspo-pipeline/
 ## Testing
 
 - `test_rss_local.py` — RSS adapter logic (mocked feed, no network)
-- `test_sheets_backend.py` — Google Sheets backend contract (mocked `gspread`, no real Google account): idempotent tab creation, batched writes, multi-tenant filtering, dedup index, retention cleanup, run-details drill-down
+- `test_sheets_backend.py` — Google Sheets backend contract (mocked `gspread`, no real Google account): idempotent tab creation, batched writes, competitors and the two rules cells, dedup index, retention cleanup, run-details drill-down
 - `test_engine_e2e.py` — the full pipeline through `engine.run_stream()` against `InMemoryBackend` (mocked feed + mocked LLM): quote verification, idempotent re-runs, AI_log completeness, cost tracking
 
 - `test_near_dedup.py`, `test_feed_discovery.py`, `test_channel_discovery.py`, `test_scraper_registry.py`, `test_apify_linkedin.py`, `test_newsletter_signup.py`, `test_gmail_routing.py` — the matching adapters and helpers, all offline

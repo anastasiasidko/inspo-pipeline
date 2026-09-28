@@ -50,7 +50,7 @@ def _resolve_sources(storage: StorageBackend, client_id: str, stream: str,
         from adapters.feed_discovery import parse_channel_lines, sources_for_competitor
         out = []
         for row in storage.get_saved_items(client_id, stream, active_only=True):
-            name = row.get("competitor") or row["value"]
+            name = row.get("competitor") or row.get("value", "")
             channels = parse_channel_lines(row.get("channels", ""))
             if not channels:
                 logger.warning(f"[{name}] no channel links saved — skipped")
