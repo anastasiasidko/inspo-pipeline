@@ -12,7 +12,7 @@ Two entry points, per the brief:
 import logging
 from typing import Dict, List, Optional
 
-from pipeline import fetch, dedup, extract, score, synthesis, competitor_map, media
+from pipeline import fetch, dedup, extract, score, synthesis, competitor_map, media, run_comment
 from storage.backend import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -82,13 +82,15 @@ def _kind_of(url: str) -> str:
     return platform_of(url) or "rss"
 
 
-def _within_lookback(items: List[Dict], lookback_days: int) -> List[Dict]:
-    """Drop items published before the look-back window (undated items are kept)."""
+def _within_lookback(items: List[Dict], lookback_days: int, by_source: Optional[Dict[str, int]] = None) -> List[Dict]:
+    """Drop items published before the look-back window (undated items are kept). `by_source` gives a
+    different window for particular sources (from the run comment)."""
     from datetime import datetime, timedelta, timezone
     from dateutil import parser as date_parser
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    now = datetime.now(timezone.utc)
     kept = []
     for item in items:
+        cutoff = now - timedelta(days=(by_source or {}).get(item.get("source_name"), lookback_days))
         published = item.get("published_date")
         try:
             d = date_parser.parse(published) if published else None
@@ -133,12 +135,16 @@ def run_stream(
     config: Optional[dict] = None,
     dry_run: bool = False,
     limit: Optional[int] = None,
+    run_comment_text: str = "",
 ) -> Dict:
     """
     Run one stream end to end: collect, remove repeats, ask the AI, check its
     quotes, score novelty, write the digest.
 
-    Returns: {"run_id": str, "digest": str, "stats": dict}
+    run_comment_text: free text for THIS run only (e.g. "for Instagram only look back 7 days"). Never saved
+    to the Rules tab; see pipeline/run_comment.py.
+
+    Returns: {"run_id": str, "digest": str, "stats": dict, ...}
     """
     storage = storage or _default_storage()
     storage.init()
@@ -147,6 +153,20 @@ def run_stream(
 
     sources = _resolve_sources(storage, client_id, stream, inputs, mode)
     inputs_used = [s["feed_url"] for s in sources]
+
+    comment = {"lookback": {}, "instructions": "", "summary": [], "warnings": [], "cost": 0.0}
+    if run_comment_text.strip():
+        inputs_used.append(f"comment: {run_comment_text.strip()}")
+        if dry_run:
+            logger.info("[DRY RUN] run comment not read (no LLM calls in a dry run)")
+        else:
+            comment = run_comment.parse_run_comment(run_comment_text, sources, lookback_days, config)
+            for s in sources:
+                if s["name"] in comment["lookback"]:
+                    s["lookback_days"] = comment["lookback"][s["name"]]
+            config = {**config, "relevance_ruleset": run_comment.add_instructions(
+                config["relevance_ruleset"], comment["instructions"]),
+                "digest_window_days": max([lookback_days] + list(comment["lookback"].values()))}
 
     run_id = storage.start_run(client_id, stream, started_by, inputs_used, mode)
     logger.info(f"Run {run_id} started — stream={stream}, mode={mode}, sources={len(sources)}")
@@ -158,7 +178,7 @@ def run_stream(
             request_timeout_seconds=config.get("request_timeout_seconds", 30),
             limit=limit, dry_run=dry_run, lookback_days=lookback_days,
         )
-        fetch_result["items"] = _within_lookback(fetch_result["items"], lookback_days)
+        fetch_result["items"] = _within_lookback(fetch_result["items"], lookback_days, comment["lookback"])
 
         dedup_result = dedup.run_dedup_phase(
             storage, client_id, stream, run_id, fetch_result["items"], dry_run=dry_run,
@@ -200,6 +220,8 @@ def run_stream(
         if extract_result.get("est_cost"):
             cost_parts.append((f"Anthropic extraction ({extract_result.get('model')}, "
                                f"{extract_result.get('llm_calls', 0)} calls)", extract_result["est_cost"]))
+        if comment.get("cost"):
+            cost_parts.append((f"Anthropic run comment ({comment['model']})", comment["cost"]))
         if digest_usage.get("cost"):
             cost_parts.append((f"Anthropic digest ({digest_usage['model']})", digest_usage["cost"]))
         for tool, usd in fetch_result.get("apify_by_tool", {}).items():
@@ -242,7 +264,8 @@ def run_stream(
     )
 
     return {"run_id": run_id, "digest": digest, "stats": stats, "notices": fetch_result.get("notices", []),
-            "competitor_map": map_text if is_monthly else "", "video_candidates": videos}
+            "competitor_map": map_text if is_monthly else "", "video_candidates": videos,
+            "comment_summary": comment["summary"], "comment_warnings": comment["warnings"]}
 
 
 def get_run_details(run_id: str, storage: Optional[StorageBackend] = None) -> Dict:

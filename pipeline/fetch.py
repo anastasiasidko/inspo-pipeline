@@ -67,6 +67,7 @@ def run_fetch_phase(
         feed_url = source["feed_url"]
 
         logger.info(f"Fetching: {name} ({feed_url})")
+        days = source.get("lookback_days", lookback_days)  # a per-channel override from the run comment
 
         kind = source.get("kind", "rss")
         if kind != "rss":
@@ -82,7 +83,7 @@ def run_fetch_phase(
                 source_stats[name] = {"found": 0, "error": f"no scraper available for {kind}"}
                 sources_returning_zero.append(name)
                 continue
-            result = scraper.fetch_profile(feed_url, name, lookback_days=lookback_days)
+            result = scraper.fetch_profile(feed_url, name, lookback_days=days)
             notices += result["stats"].get("notices", [])
             apify_cost += result["stats"].get("cost_usd", 0.0)
             tool = result["stats"].get("tool") or "Apify (all scrapers failed)"
@@ -90,7 +91,7 @@ def run_fetch_phase(
         else:
             from datetime import datetime, timedelta, timezone
             result = adapter.fetch_feed(
-                feed_url, name, since=datetime.now(timezone.utc) - timedelta(days=lookback_days))
+                feed_url, name, since=datetime.now(timezone.utc) - timedelta(days=days))
         items = result["items"]
         stats = result["stats"]
         source_stats[name] = stats

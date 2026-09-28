@@ -18,15 +18,16 @@ def build_map(sources: List[Dict], items: List[Dict], lookback_days: int, cap: i
     counts: Dict[str, int] = {}
     for item in items:
         counts[item.get("source_name", "")] = counts.get(item.get("source_name", ""), 0) + 1
-    weeks = max(lookback_days, 1) / 7
     rows = []
     for s in sources:
         name = s["name"]
         competitor, _, channel = name.partition(" — ")
         posts = counts.get(name, 0)
+        days = s.get("lookback_days", lookback_days)
+        weeks = max(days, 1) / 7
         rows.append({
             "competitor": competitor, "channel": channel or s.get("kind", "rss"),
-            "posts": posts, "per_week": round(posts / weeks, 1),
+            "posts": posts, "per_week": round(posts / weeks, 1), "days": days,
             "capped": s.get("kind", "rss") != "rss" and posts >= cap,
         })
     return sorted(rows, key=lambda r: (r["competitor"], r["channel"]))
@@ -41,5 +42,7 @@ def format_map(rows: List[Dict], lookback_days: int, cap: int) -> str:
             current = r["competitor"]
             lines.append(current)
         note = f" (at the {cap}-post limit, may be more)" if r["capped"] else ""
+        if r.get("days", lookback_days) != lookback_days:
+            note += f" [last {r['days']} days]"
         lines.append(f"  {r['channel']}: {r['posts']} posts, {r['per_week']} per week{note}")
     return "\n".join(lines)

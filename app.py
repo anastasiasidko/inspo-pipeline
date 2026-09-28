@@ -92,38 +92,49 @@ elif state.step == 2:
     st.caption("One channel per line, as  Label: link.  Edit, delete, or add any links you know. "
                "When it looks right, approve. Only the people below will be collected.")
     edited = {}
-    for name in state.names:
-        edited[name] = st.text_area(name, value=state.channels[name], height=280, key=f"ch_{name}")
-        if not edited[name].strip():
-            st.caption("Nothing found. Add links above, or this competitor will be skipped.")
-        missing = sorted({platform_of(u) for _, u in parse_channel_lines(edited[name])
-                          if platform_of(u) and not has_scraper(platform_of(u))})
-        if missing:
-            st.warning("No scraper yet for " + ", ".join(pretty(p) for p in missing) +
-                       ". When you approve, one will be looked up in Apify and used automatically.")
-        if state.sources.get(name):
-            with st.expander("Where these links came from"):
-                for line in state.sources[name]:
-                    st.write(line)
+    left_col, right_col = st.columns([3, 2])
+    with right_col:
+        st.markdown("**Comments for this run**")
+        run_comment_text = st.text_area(
+            "Comments for this run", height=280, label_visibility="collapsed", key="run_comment",
+            placeholder="Only for this run, nothing is saved. They win over the general rules.\n\n"
+                        "For example:\nFor Instagram, look back only 7 days.\nIgnore posts about hiring this time.")
+        st.caption("The look-back you set on the first screen applies to every channel unless you say otherwise here. "
+                   "The Rules tab is not changed.")
+    with left_col:
+        for name in state.names:
+            edited[name] = st.text_area(name, value=state.channels[name], height=280, key=f"ch_{name}")
+            if not edited[name].strip():
+                st.caption("Nothing found. Add links above, or this competitor will be skipped.")
+            missing = sorted({platform_of(u) for _, u in parse_channel_lines(edited[name])
+                              if platform_of(u) and not has_scraper(platform_of(u))})
+            if missing:
+                st.info("No scraper set up yet for " + ", ".join(pretty(p) for p in missing) +
+                        ". When you approve, I'll search Apify for one, use it (spend capped at $0.10 per run) "
+                        "and tell you which one.")
+            if state.sources.get(name):
+                with st.expander("Where these links came from"):
+                    for line in state.sources[name]:
+                        st.write(line)
 
-        nl = newsletter_needing_subscription(parse_channel_lines(edited[name]))
-        if nl:
-            nl_label, nl_url = nl
-            st.caption(f"{name} has a newsletter with no public feed, so it can only be collected by subscribing.")
-            if st.button(f"Subscribe to {name}'s newsletter", key=f"sub_{name}"):
-                with st.spinner("Submitting the signup form…"):
-                    result = submit_signup(nl_url, state.get("signup_email", DEFAULT_SIGNUP_EMAIL))
-                status = result["status"]
-                (st.success if status == "subscribed" else st.info if status == "pending_confirmation"
-                 else st.warning)(result["message"])
-                if status in ("subscribed", "pending_confirmation"):
-                    newsletter_routing.record_subscription(name, nl_url)
-                    st.caption(f"Once {name}'s first newsletter email arrives, it'll be moved into a "
-                               f"'{newsletter_routing.LABEL_NAME}' Gmail folder automatically — check "
-                               f"back with the button below.")
-                if status == "pending_confirmation":
-                    st.caption("Also: this newsletter needs a confirmation click, which isn't automated yet "
-                               "(needs the app's own Gmail login) — please click the confirmation link yourself.")
+            nl = newsletter_needing_subscription(parse_channel_lines(edited[name]))
+            if nl:
+                nl_label, nl_url = nl
+                st.caption(f"{name} has a newsletter with no public feed, so it can only be collected by subscribing.")
+                if st.button(f"Subscribe to {name}'s newsletter", key=f"sub_{name}"):
+                    with st.spinner("Submitting the signup form…"):
+                        result = submit_signup(nl_url, state.get("signup_email", DEFAULT_SIGNUP_EMAIL))
+                    status = result["status"]
+                    (st.success if status == "subscribed" else st.info if status == "pending_confirmation"
+                     else st.warning)(result["message"])
+                    if status in ("subscribed", "pending_confirmation"):
+                        newsletter_routing.record_subscription(name, nl_url)
+                        st.caption(f"Once {name}'s first newsletter email arrives, it'll be moved into a "
+                                   f"'{newsletter_routing.LABEL_NAME}' Gmail folder automatically — check "
+                                   f"back with the button below.")
+                    if status == "pending_confirmation":
+                        st.caption("Also: this newsletter needs a confirmation click, which isn't automated yet "
+                                   "(needs the app's own Gmail login) — please click the confirmation link yourself.")
 
     pending = newsletter_routing.pending_count()
     if pending:
@@ -162,7 +173,9 @@ elif state.step == 2:
                 try:
                     result = engine.run_stream(
                         stream=STREAM, inputs=inputs, mode="typed_only", lookback_days=state.lookback,
-                        started_by="app", client_id=CLIENT_ID, storage=get_storage())
+                        started_by="app", client_id=CLIENT_ID, storage=get_storage(),
+                        run_comment_text=run_comment_text)
+                    state.comment_info = result.get("comment_summary", []), result.get("comment_warnings", [])
                     state.digest, state.skipped, state.notices, state.step = result["digest"], skipped, result.get("notices", []), 3
                     state.map_text, state.videos = result.get("competitor_map", ""), result.get("video_candidates", [])
                     state.video_done, state.suggestions = {}, None
@@ -177,6 +190,12 @@ else:
     st.subheader("3. Your digest")
     for note in state.get("notices", []):
         st.warning(note)
+    applied, comment_warnings = state.get("comment_info", ([], []))
+    if applied:
+        st.info("Your comments for this run were applied (this run only, nothing saved):\n\n" +
+                "\n".join(f"- {line}" for line in applied))
+    for w in comment_warnings:
+        st.warning(w)
     st.markdown(state.digest.replace("\n", "  \n"))
 
     if state.get("map_text"):

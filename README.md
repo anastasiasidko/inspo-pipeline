@@ -24,6 +24,7 @@ Every finding, raw item, AI verdict, and digest is saved to a shared Google Shee
 - **Video approval** (`pipeline/media.py`): posts that are relevant and carry a video are listed with the video's length. Nothing is fetched until approved; then an Apify transcript actor (looked up in the Store, capped at $0.10 per run, falls back to the next actor) fetches it and the transcript goes through the normal extraction, quote check and digest under the post's author. Only videos, not images. The video field names are not yet confirmed against a real video post.
 - **Competitor map** (`pipeline/competitor_map.py`, tab `Competitor_map`): posts and posts per week per competitor and channel, counted from everything the scrapers returned before dedup and the relevance filter. No engagement. Computed and saved only for runs with a look-back of 28+ days; social channels at the per-profile post limit (30) are flagged.
 - **Suggested new voices** (`pipeline/suggestions.py`): a button (it uses the Anthropic search budget, so it is never automatic) proposes 5 people not already followed, each with a reason, a source page from the search results, and reach only when a search result states it. "Add to competitors" pre-fills the first screen; it never runs anything itself.
+- **Comments for one run** (`pipeline/run_comment.py`): a box next to the channel list on screen 2. What is written there applies to that run only and is never saved to the Rules tab. Claude splits the comment into per-channel look-backs (for example "for Instagram only look back 7 days" while the default is 15 — applied to every matching channel, and the digest window widens if one channel looks back further) and everything else (added to the AI's rules as run-only instructions that win on conflict). A limit that matches no channel is reported, not applied. The result screen shows exactly what was applied, and the comment is logged in the Runs tab (`inputs_used`). Costs a fraction of a cent.
 - **Costs**: every run records a per-tool cost breakdown in the Runs tab (Anthropic extraction and digest, each Apify actor).
 
 ## Setup
@@ -190,6 +191,7 @@ inspo-pipeline/
 ├── pipeline/
 │   ├── channel_discovery.py    # Find a person's channels (Claude + web search)
 │   ├── competitor_map.py       # Posts and cadence per channel (counting only)
+│   ├── run_comment.py          # Comments that apply to one run only
 │   ├── media.py                # Video candidates + approved-video transcripts
 │   ├── suggestions.py          # 5 suggested new people to follow
 │   ├── newsletter_routing.py   # Pending newsletter subscriptions -> Gmail filter
@@ -232,6 +234,7 @@ inspo-pipeline/
 - `test_engine_e2e.py` — the full pipeline through `engine.run_stream()` against `InMemoryBackend` (mocked feed + mocked LLM): quote verification, idempotent re-runs, AI_log completeness, cost tracking
 
 - `test_near_dedup.py`, `test_feed_discovery.py`, `test_channel_discovery.py`, `test_scraper_registry.py`, `test_apify_linkedin.py`, `test_newsletter_signup.py`, `test_gmail_routing.py` — the matching adapters and helpers, all offline
+- `test_run_comment.py` — per-channel look-back and run-only instructions (never saved to Rules)
 - `test_monthly_features.py` — video detection and approval, competitor map, suggested voices, video transcript through the digest
 
 Run all with `python -m pytest -q` (one pre-existing `test_rerunning_is_idempotent` error is a test-file quirk, not a pipeline failure).
