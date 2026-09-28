@@ -101,6 +101,8 @@ elif state.step == 2:
                         "For example:\nFor Instagram, look back only 7 days.\nIgnore posts about hiring this time.")
         st.caption("The look-back you set on the first screen applies to every channel unless you say otherwise here. "
                    "The Rules tab is not changed.")
+        st.caption("Write **#map** anywhere in the comment to also fill the Competitor_map tab for this run: posting "
+                   "cadence per channel, plus 2 similar people for each competitor (a web search per competitor).")
     with left_col:
         for name in state.names:
             edited[name] = st.text_area(name, value=state.channels[name], height=280, key=f"ch_{name}")
@@ -178,6 +180,7 @@ elif state.step == 2:
                     state.comment_info = result.get("comment_summary", []), result.get("comment_warnings", [])
                     state.digest, state.skipped, state.notices, state.step = result["digest"], skipped, result.get("notices", []), 3
                     state.map_text, state.videos = result.get("competitor_map", ""), result.get("video_candidates", [])
+                    state.similar = result.get("similar_voices", {})
                     state.video_done, state.suggestions = {}, None
                 except Exception as e:
                     st.error(f"The run failed: {e}")
@@ -201,6 +204,18 @@ else:
     if state.get("map_text"):
         st.subheader("Posting activity")
         st.text(state.map_text)
+    if state.get("similar"):
+        st.subheader("Similar people, per competitor")
+        for comp, people in state.similar.items():
+            st.markdown(f"**{comp}**")
+            if not people:
+                st.caption("No suggestions came back with a source I could check.")
+            for j, p in enumerate(people):
+                st.markdown(f"{p['name']} — {p['why']}  \n[Where I found them]({p['url']})")
+                st.caption(f"Reach: {p['reach']}" if p["reach"] else "Reach: not found in the search results")
+                if st.button(f"Add {p['name']} to competitors", key=f"sim_{comp}_{j}"):
+                    state.prefill_name, state.step = p["name"], 1
+                    st.rerun()
 
     if state.get("videos"):
         st.subheader("Videos worth a look")

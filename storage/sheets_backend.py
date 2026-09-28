@@ -68,8 +68,10 @@ TAB_HEADERS = {
         "target_audience", "terminology", "other_note", "created_at",
     ],
     "Digests": ["run_id", "stream", "date_range", "digest_text", "created_at"],
+    # One row per channel (posts, cadence) and, for runs with #map, one row per similar person found
+    # (channel = "Similar voice", the last four columns filled).
     "Competitor_map": ["run_id", "created_at", "competitor", "channel", "posts", "posts_per_week",
-                       "window_days", "at_post_limit"],
+                       "window_days", "at_post_limit", "similar_person", "why_similar", "reach", "source_url"],
 }
 
 DEFAULT_CLIENT = "ksenia"
@@ -192,9 +194,14 @@ class SheetsBackend(StorageBackend):
                 logger.info(f"Created missing tab: {tab_name}")
             else:
                 ws = self._ws(tab_name)
-                if not _with_backoff(ws.row_values)(1):
+                current = _with_backoff(ws.row_values)(1)
+                if not current:
                     _with_backoff(ws.append_row)(headers)
                     logger.info(f"Wrote missing header row: {tab_name}")
+                elif current != headers and headers[:len(current)] == current:
+                    # A newer version added columns at the end: add their headers, touch nothing else.
+                    _with_backoff(ws.update)(range_name="A1", values=[headers])
+                    logger.info(f"Added new columns to {tab_name}: {headers[len(current):]}")
 
     # ---- Settings ----
 
@@ -483,8 +490,9 @@ class SheetsBackend(StorageBackend):
         now = _now_iso()
         self._append_rows("Competitor_map", [{
             "run_id": run_id, "created_at": now, "competitor": r["competitor"], "channel": r["channel"],
-            "posts": r["posts"], "posts_per_week": r["per_week"], "window_days": window_days,
-            "at_post_limit": "Y" if r.get("capped") else "",
+            "posts": r["posts"], "posts_per_week": r["per_week"], "window_days": r.get("days") or window_days,
+            "at_post_limit": "Y" if r.get("capped") else "", "similar_person": r.get("similar_person", ""),
+            "why_similar": r.get("why_similar", ""), "reach": r.get("reach", ""), "source_url": r.get("source_url", ""),
         } for r in rows])
 
     # ---- Digests ----

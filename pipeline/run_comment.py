@@ -23,6 +23,7 @@ from pipeline.costs import llm_cost_usd
 logger = logging.getLogger(__name__)
 
 PARSE_MODEL = "claude-haiku-4-5-20251001"
+MAP_TRIGGER = "#map"  # write this in the run comment to also fill the Competitor_map tab for this run
 MAX_DAYS = 365
 PROMPT = """A person is running a content-monitoring job. The default look-back is {default} days.
 These are the channels in this run (names as shown): {channels}
@@ -38,6 +39,12 @@ Split the comment into:
    that is not in the comment. Leave the look-back requests out. Use "" if nothing else is left.
 Return JSON only:
 {{"lookback_days": [{{"match": "Instagram", "days": 7}}], "instructions": ""}}"""
+
+
+def extract_map_trigger(comment: str):
+    """-> (asked for the map?, the comment without the trigger). Exact keyword, no AI involved."""
+    pattern = re.compile(r"(?<![\w#])" + re.escape(MAP_TRIGGER) + r"\b", re.I)
+    return bool(pattern.search(comment or "")), pattern.sub("", comment or "").strip()
 
 
 def parse_run_comment(comment: str, sources: List[Dict], default_days: int, config: dict = None,

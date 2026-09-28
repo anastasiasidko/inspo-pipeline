@@ -100,3 +100,65 @@ def test_run_instructions_reach_the_ai_but_are_never_saved_to_rules():
     assert storage.get_rules("ksenia", "general")["rules_text"] == "Flag ideas about work."  # untouched
     assert result["comment_summary"] == ["Instructions for this run: x"]
     assert any(i.startswith("comment: ") for i in storage.get_run(result["run_id"])["inputs_used"])
+
+
+# ---------------------------------------------------------------- #map trigger
+def test_map_trigger_is_an_exact_keyword_and_is_removed_from_the_comment():
+    assert run_comment.extract_map_trigger("For Instagram 7 days. #map") == (True, "For Instagram 7 days.")
+    assert run_comment.extract_map_trigger("#MAP")[0] is True
+    assert run_comment.extract_map_trigger("draw a map of it") == (False, "draw a map of it")
+    assert run_comment.extract_map_trigger("#mapping later")[0] is False
+
+
+def _search_reply(people, urls):
+    result = MagicMock(type="web_search_tool_result", content=[MagicMock(url=u, title="t") for u in urls])
+    text = MagicMock(type="text", text=json.dumps(people))
+    usage = MagicMock(input_tokens=1000, output_tokens=200, server_tool_use=MagicMock(web_search_requests=2))
+    return MagicMock(content=[result, text], stop_reason="end_turn", usage=usage)
+
+
+def test_map_run_saves_cadence_and_two_similar_people_per_competitor_without_repeats():
+    import feedparser
+    storage = InMemoryBackend()
+    storage.save_rules("ksenia", "general", "Thought leadership on work and burnout.", "test")
+    people = {
+        "Fake": [{"name": "Ann New", "why": "Writes on burnout.", "url": "https://ann.com", "reach": "50k readers",
+                  "reach_source": "https://ann.com"},
+                 {"name": "Bo New", "why": "Writes on pricing.", "url": "https://bo.com", "reach": None, "reach_source": None},
+                 {"name": "Cy Extra", "why": "third, should be cut", "url": "https://cy.com", "reach": None, "reach_source": None}],
+    }
+    client = make_mock_anthropic_client()
+    extraction = client.messages.create.return_value
+    search = _search_reply(people["Fake"], ["https://ann.com", "https://bo.com", "https://cy.com"])
+    client.messages.create.side_effect = lambda **kw: search if kw.get("tools") else extraction
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    with patch("feedparser.parse", return_value=feedparser.parse(FAKE_FEED_XML)), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic", return_value=client):
+        result = engine.run_stream(
+            stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"], mode="typed_only",
+            lookback_days=7, started_by="test", storage=storage, config=dict(TEST_CONFIG),
+            run_comment_text="#map")
+    assert [p["name"] for p in result["similar_voices"]["Fake"]] == ["Ann New", "Bo New"]  # exactly 2
+    assert "Posting activity" in result["competitor_map"]  # shown although the run is only 7 days
+    saved = storage.competitor_map
+    assert any(r["channel"] == "Similar voice" and r["similar_person"] == "Ann New" and r["reach"] == "50k readers"
+               for r in saved)
+    assert any(r.get("posts") is not None and r["channel"] != "Similar voice" for r in saved)
+    assert "similar-people search" in result["stats"]["cost_breakdown"]
+    assert any("#map" in line for line in result["comment_summary"])
+
+
+def test_without_the_trigger_a_short_run_saves_no_map():
+    import feedparser
+    storage = InMemoryBackend()
+    storage.save_rules("ksenia", "general", "Rules.", "test")
+    client = make_mock_anthropic_client()
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    with patch("feedparser.parse", return_value=feedparser.parse(FAKE_FEED_XML)), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic", return_value=client):
+        result = engine.run_stream(
+            stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"], mode="typed_only",
+            lookback_days=7, started_by="test", storage=storage, config=dict(TEST_CONFIG))
+    assert result["competitor_map"] == "" and result["similar_voices"] == {} and not getattr(storage, "competitor_map", [])

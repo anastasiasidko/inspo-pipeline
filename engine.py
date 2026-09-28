@@ -124,6 +124,36 @@ def _config_with_rules(storage: StorageBackend, client_id: str, stream: str, loo
     return config
 
 
+SIMILAR_PER_COMPETITOR = 2
+WEB_SEARCH_USD = 0.01  # Anthropic's price per web search request
+
+
+def _find_similar_voices(storage: StorageBackend, client_id: str, stream: str, run_id: str, competitors: List[str],
+                          lookback_days: int, config: dict):
+    """For each competitor in this run, 2 other people who write about essentially the same things (by web
+    search, within the scope of the rules). -> ({competitor: [people]}, cost_usd)."""
+    from pipeline import suggestions
+    saved = {r.get("competitor"): r for r in storage.get_saved_items(client_id, stream, active_only=False)}
+    followed = [n for n in saved if n] + list(competitors)
+    findings = [f for f in storage.get_findings_for_digest(client_id, stream, days_back=lookback_days)
+                if f.get("run_id") == run_id]
+    out, usage, seen = {}, {}, list(followed)
+    for name in competitors:
+        about = [f"Positioning: {saved[name].get('positioning')}" for _ in [0] if saved.get(name, {}).get("positioning")]
+        about += [f"Keywords: {saved[name].get('keywords')}" for _ in [0] if saved.get(name, {}).get("keywords")]
+        about += [f"- {f['summary']}" for f in findings if f.get("entity") == name][:6]
+        people = suggestions.similar_voices(name, "\n".join(about), config.get("relevance_ruleset", ""), seen,
+                                            n=SIMILAR_PER_COMPETITOR, usage_out=usage)
+        out[name] = people
+        seen += [p["name"] for p in people]
+    cost = 0.0
+    if usage:
+        from pipeline.costs import llm_cost_usd
+        cost = (llm_cost_usd(config, suggestions.SUGGEST_MODEL, usage.get("input", 0), usage.get("output", 0))
+                + WEB_SEARCH_USD * usage.get("searches", 0))
+    return out, cost
+
+
 def run_stream(
     stream: str,
     inputs: List[str],
@@ -154,6 +184,9 @@ def run_stream(
     sources = _resolve_sources(storage, client_id, stream, inputs, mode)
     inputs_used = [s["feed_url"] for s in sources]
 
+    map_requested, run_comment_text = run_comment.extract_map_trigger(run_comment_text)
+    if map_requested:
+        inputs_used.append(f"comment: {run_comment.MAP_TRIGGER}")
     comment = {"lookback": {}, "instructions": "", "summary": [], "warnings": [], "cost": 0.0}
     if run_comment_text.strip():
         inputs_used.append(f"comment: {run_comment_text.strip()}")
@@ -194,8 +227,21 @@ def run_stream(
         from adapters.apify_linkedin_adapter import DEFAULT_MAX_POSTS
         map_rows = competitor_map.build_map(sources, fetch_result["items"], lookback_days, DEFAULT_MAX_POSTS)
         map_text = competitor_map.format_map(map_rows, lookback_days, DEFAULT_MAX_POSTS)
-        is_monthly = lookback_days >= competitor_map.MONTHLY_MIN_DAYS
-        if is_monthly and not dry_run:
+        show_map = lookback_days >= competitor_map.MONTHLY_MIN_DAYS or map_requested
+        similar, similar_cost = {}, 0.0
+        if map_requested and not dry_run:
+            competitors = list(dict.fromkeys(s["name"].partition(" — ")[0] for s in sources))
+            similar, similar_cost = _find_similar_voices(storage, client_id, stream, run_id, competitors,
+                                                         lookback_days, config)
+            comment["summary"].append(
+                f"{run_comment.MAP_TRIGGER}: posting activity and {SIMILAR_PER_COMPETITOR} similar people per "
+                f"competitor were added to the Competitor_map tab")
+            map_rows = map_rows + [
+                {"competitor": comp, "channel": "Similar voice", "posts": "", "per_week": "", "days": "",
+                 "capped": False, "similar_person": p["name"], "why_similar": p["why"], "reach": p["reach"] or "",
+                 "source_url": p["url"]}
+                for comp, people in similar.items() for p in people]
+        if show_map and not dry_run:
             storage.save_competitor_map(client_id, run_id, lookback_days, map_rows)
         videos = media.video_candidates(dedup_result["new_items"], extract_result.get("verified_urls"))
 
@@ -220,6 +266,8 @@ def run_stream(
         if extract_result.get("est_cost"):
             cost_parts.append((f"Anthropic extraction ({extract_result.get('model')}, "
                                f"{extract_result.get('llm_calls', 0)} calls)", extract_result["est_cost"]))
+        if similar_cost:
+            cost_parts.append((f"Anthropic similar-people search ({SIMILAR_PER_COMPETITOR} per competitor)", similar_cost))
         if comment.get("cost"):
             cost_parts.append((f"Anthropic run comment ({comment['model']})", comment["cost"]))
         if digest_usage.get("cost"):
@@ -264,7 +312,7 @@ def run_stream(
     )
 
     return {"run_id": run_id, "digest": digest, "stats": stats, "notices": fetch_result.get("notices", []),
-            "competitor_map": map_text if is_monthly else "", "video_candidates": videos,
+            "competitor_map": map_text if show_map else "", "similar_voices": similar, "video_candidates": videos,
             "comment_summary": comment["summary"], "comment_warnings": comment["warnings"]}
 
 

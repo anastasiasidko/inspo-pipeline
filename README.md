@@ -25,6 +25,7 @@ Every finding, raw item, AI verdict, and digest is saved to a shared Google Shee
 - **Competitor map** (`pipeline/competitor_map.py`, tab `Competitor_map`): posts and posts per week per competitor and channel, counted from everything the scrapers returned before dedup and the relevance filter. No engagement. Computed and saved only for runs with a look-back of 28+ days; social channels at the per-profile post limit (30) are flagged.
 - **Suggested new voices** (`pipeline/suggestions.py`): a button (it uses the Anthropic search budget, so it is never automatic) proposes 5 people not already followed, each with a reason, a source page from the search results, and reach only when a search result states it. "Add to competitors" pre-fills the first screen; it never runs anything itself.
 - **Comments for one run** (`pipeline/run_comment.py`): a box next to the channel list on screen 2. What is written there applies to that run only and is never saved to the Rules tab. Claude splits the comment into per-channel look-backs (for example "for Instagram only look back 7 days" while the default is 15 — applied to every matching channel, and the digest window widens if one channel looks back further) and everything else (added to the AI's rules as run-only instructions that win on conflict). A limit that matches no channel is reported, not applied. The result screen shows exactly what was applied, and the comment is logged in the Runs tab (`inputs_used`). Costs a fraction of a cent.
+- **`#map` in the run comment** (`engine._find_similar_voices`, `pipeline/suggestions.similar_voices`): while tuning, write `#map` anywhere in the comments box to get the competitor map for that run even if it is shorter than 28 days, plus 2 similar people per competitor. Similar people are found by web search from what the competitor posted in the run (and their positioning/keywords in Settings), within the scope of the rules, excluding everyone already followed or already suggested; each needs a source page from the search results, and reach appears only when a search result states it. Both go into the Competitor_map tab (channel rows, plus "Similar voice" rows with the last four columns filled) and onto the result screen. The keyword is matched exactly, without AI. Cost is shown in the Runs tab's cost_breakdown (one web search per competitor).
 - **Costs**: every run records a per-tool cost breakdown in the Runs tab (Anthropic extraction and digest, each Apify actor).
 
 ## Setup
@@ -129,7 +130,8 @@ Findings   finding_id, run_id, stream, entity, signal_type, signal_category,
            created_at
 Digests    run_id, stream, date_range, digest_text, created_at
 Competitor_map  run_id, created_at, competitor, channel, posts, posts_per_week,
-                window_days, at_post_limit   (28+ day runs only)
+                window_days, at_post_limit, similar_person, why_similar, reach,
+                source_url   (28+ day runs, or any run with #map)
 ```
 
 Collected and AI_log rows older than 30 days are purged automatically at the end of every run (`cleanup_old_data`). Findings/Digests/Runs/Settings/Rules are kept forever.
