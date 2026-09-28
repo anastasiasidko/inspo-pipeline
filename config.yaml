@@ -1,0 +1,87 @@
+# Inspo Pipeline — Local Operational Config
+#
+# This file holds technical/cost settings only — model choice, the signal
+# taxonomy, timeouts. It does NOT hold the source list or the relevance
+# ruleset anymore: those are business judgment calls that live in the shared
+# Google Sheet (Settings and Rules tabs) so both Anastasia and Ksenia can
+# read and edit them without touching code. See storage/backend.py.
+#
+# The one-time migration of this file's old `sources`/`relevance_ruleset`
+# values into the Sheet is handled by migrate_config_to_sheets.py.
+
+# Stream identifier (e.g., "competitor_monitoring", "industry_trends", "social_listening")
+stream: "competitor_monitoring"
+
+# Cheap model that reads every item and decides if anything is worth flagging.
+extraction_model: "claude-haiku-4-5-20251001"
+
+# Stronger model that writes the digest (one call per run, so cost stays small).
+synthesis_model: "claude-opus-5"
+
+# Default digest window in days — the app's "Look back: 7/14/30" selector
+# overrides this per run; this is just the CLI/default fallback.
+digest_window_days: 14
+
+# ============================================================================
+# SIGNAL TYPES — Named types for extraction results
+# ============================================================================
+# Pick 3-4 types plus one escape hatch ("other" for things you didn't predict).
+#
+# ⚠️ DO NOT include "messaging_change" or "pricing_change" as named types.
+#    Those require time-series comparison, not single-article extraction.
+#    The extraction fields bank raw material (themes, value_claims, etc.)
+#    for this analysis later.
+
+signal_types:
+  - product_launch
+  - campaign_launch
+  - content_theme
+  - partnership
+  - other  # escape hatch: required explanatory note when used
+
+# Broad family label per signal_type (product/market/customer/content/hiring).
+# Not read by extraction — attached afterward so the taxonomy can evolve
+# without touching the extraction prompt.
+signal_category_map:
+  product_launch: "product"
+  campaign_launch: "market"
+  content_theme: "content"
+  partnership: "market"
+
+# novelty (default): a new entity+signal_type combo scores high, a repeat scores low.
+# recurrence: inverted — used for streams like social listening where repetition
+# itself is the signal (e.g. the 5th mention of a pain point matters more).
+scoring_direction: "novelty"
+
+# Texts at least this similar (0-1, word-overlap) to something already collected
+# are skipped before the AI sees them. Lower = more aggressive. Texts under 30
+# words only match exactly.
+near_duplicate_threshold: 0.8
+
+# ============================================================================
+# LOCAL DIGEST MIRROR (optional)
+# ============================================================================
+# The digest is saved through the storage backend (the Sheet) — this local
+# file is only a convenience copy for reading from the terminal. Leave blank
+# to skip writing it.
+digest_path: "./digest.md"
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+log_level: "INFO"
+log_file: "./pipeline.log"
+
+# ============================================================================
+# PERFORMANCE / TESTING
+# ============================================================================
+request_timeout_seconds: 30
+
+# Price per 1,000 tokens, used to compute each run's cost. Add a model here
+# before switching to it (Anthropic list prices per million: Haiku 4.5 $1/$5,
+# Sonnet 5 $2/$10, Opus 5 $5/$25, Fable 5.1 $10/$50).
+model_prices:
+  claude-haiku-4-5-20251001: {input: 0.001, output: 0.005}
+  claude-sonnet-5:           {input: 0.002, output: 0.010}
+  claude-opus-5:             {input: 0.005, output: 0.025}
+  claude-fable-5-1:          {input: 0.010, output: 0.050}

@@ -1,0 +1,69 @@
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project-specific
+pipeline.log
+digest.md
+*.log
+
+# Environment variables (and any backup copies made while editing them)
+.env
+.env.local
+.env.bak
+.env.*.bak
+*.env.bak
+
+# Google service account key — never commit credentials
+*.service-account.json
+*service_account*.json
+inspo-pipeline-*.json
+credentials/
+
+# Streamlit secrets (used only once this is deployed to Streamlit Cloud)
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Gmail OAuth: the app's own client secret and cached login token
+gmail_token.json
+*gmail*client*.json

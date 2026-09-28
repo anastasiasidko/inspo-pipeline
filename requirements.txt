@@ -1,0 +1,43 @@
+# Inspo Pipeline Dependencies
+
+# Core
+python-dotenv==1.0.0
+pyyaml==6.0
+
+# RSS and web scraping
+feedparser==6.0.10
+requests>=2.31.0
+certifi  # feedparser's urllib needs this pointed at explicitly, see adapters/rss_adapter.py
+# trafilatura 1.6.3 hard-pins lxml==4.9.2 on macOS, which has no prebuilt wheel
+# and fails to compile without Xcode command line tools. 2.x relaxes that pin
+# and installs cleanly; API used here (trafilatura.extract) is unchanged.
+trafilatura>=2.0.0
+lxml  # version resolved by trafilatura; don't pin here
+lxml_html_clean  # lxml split html.clean out as of lxml 5.2; justext (a trafilatura dep) needs it
+
+# UI
+streamlit>=1.38
+beautifulsoup4  # parses newsletter signup forms; pure-Python (html.parser backend), no compiled deps
+
+# Storage: Google Sheets (shared, replaces the old local SQLite backend)
+gspread>=6.1
+google-auth>=2.35
+# google-auth pulls in cryptography; recent cryptography releases ship no
+# prebuilt wheel for this machine (macOS, no Xcode command line tools) and
+# fail to compile (needs Rust/maturin). 44.x and earlier have working wheels.
+cryptography<45
+
+# LLM / API
+anthropic>=1.0
+
+# Logging and utilities
+python-dateutil>=2.9.0
+pytz>=2024.2
+
+# Testing (optional, for development)
+pytest==7.4.3
+pytest-cov==4.1.0
+
+# Gmail API (the app's own login, separate from the Google Sheets service account)
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.0
