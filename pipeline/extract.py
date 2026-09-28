@@ -187,6 +187,20 @@ def _extract_findings_with_retry(client, model: str, prompt: str, source_name: s
     }
 
 
+def _short_error(e: Exception) -> str:
+    """The provider's own message when it gave one (e.g. 'You have reached your specified API usage limits…')."""
+    body = getattr(e, "body", None)
+    msg = (body.get("error", {}).get("message") if isinstance(body, dict) and isinstance(body.get("error"), dict)
+           else None) or str(e)
+    return " ".join(msg.split())[:300]
+
+
+def _is_fatal_api_error(e: Exception) -> bool:
+    """Errors that will hit every remaining item too (usage limit, no credit, bad key): stop instead of retrying."""
+    text = _short_error(e).lower()
+    return any(t in text for t in ("usage limit", "credit balance", "invalid x-api-key", "authentication", "permission"))
+
+
 def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, run_id: str,
                           raw_items: List[Dict],
                           limit: Optional[int] = None,
@@ -218,6 +232,7 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
         "empty_articles": 0,
         "errors": 0,
         "est_cost": 0.0,
+        "failed": 0,  # items the AI could not analyse (they are logged in AI_log and retried on the next run)
         "verified_urls": [],  # posts that produced at least one quote-verified finding
     }
 
@@ -253,7 +268,7 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
     findings_to_save: List[Dict] = []
     ai_log_entries: List[Dict] = []
 
-    for item in items:
+    for item_index, item in enumerate(items):
         source_name = item["source_name"]
         source_url = item["source_url"]
         text = item["text"]
@@ -279,6 +294,19 @@ def run_extraction_phase(config: dict, storage: StorageBackend, client_id: str, 
         except Exception as e:
             logger.error(f"[{source_name}] Extraction call failed: {e}")
             stats["errors"] += 1
+            reason = _short_error(e)
+            stats["failed"] = stats.get("failed", 0) + 1
+            stats["first_error"] = stats.get("first_error") or reason
+            ai_log_entries.append({"item_url": source_url, "verdict": f"failed: {reason}", "raw_ai_response": ""})
+            if _is_fatal_api_error(e):
+                # Every remaining item would fail the same way — record them as not analysed and stop.
+                stats["fatal_error"] = reason
+                for rest in items[item_index + 1:]:
+                    ai_log_entries.append({"item_url": rest["source_url"],
+                                           "verdict": "failed: not analysed, the AI was unavailable",
+                                           "raw_ai_response": ""})
+                    stats["failed"] += 1
+                break
             continue
 
         findings = result["findings"]

@@ -162,3 +162,52 @@ def test_without_the_trigger_a_short_run_saves_no_map():
             stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"], mode="typed_only",
             lookback_days=7, started_by="test", storage=storage, config=dict(TEST_CONFIG))
     assert result["competitor_map"] == "" and result["similar_voices"] == {} and not getattr(storage, "competitor_map", [])
+
+
+# ---------------------------------------------------------------- AI failures (usage limit) are visible and not lost
+def test_usage_limit_is_logged_reported_and_the_posts_are_retried_next_run():
+    import feedparser
+    storage = InMemoryBackend()
+    storage.save_rules("ksenia", "general", "Rules.", "test")
+
+    class LimitError(Exception):
+        body = {"error": {"message": "You have reached your specified API usage limits. You will regain access on 2026-10-01."}}
+
+    blocked = MagicMock()
+    blocked.messages.create.side_effect = LimitError("400")
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    with patch("feedparser.parse", return_value=feedparser.parse(FAKE_FEED_XML)), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic", return_value=blocked):
+        first = engine.run_stream(stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"],
+                                  mode="typed_only", lookback_days=3650, started_by="test", storage=storage,
+                                  config=dict(TEST_CONFIG), run_comment_text="#map")
+    assert blocked.messages.create.call_count == 1  # stopped after the first failure, did not hammer the API
+    assert first["notices"][0].startswith("The AI could not analyse 2 post(s): You have reached your specified API usage")
+    assert "could not analyse 2 collected post(s)" in first["digest"] and "No new content" not in first["digest"]
+    assert first["similar_voices"] == {}  # no search attempted while the AI is unavailable
+    assert len(storage.ai_log) == 2 and all(r["verdict"].startswith("failed") for r in storage.ai_log)
+
+    # Next run, AI available again: the same posts are analysed instead of skipped as "already collected".
+    with patch("feedparser.parse", return_value=feedparser.parse(FAKE_FEED_XML)), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic", return_value=make_mock_anthropic_client()):
+        second = engine.run_stream(stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"],
+                                   mode="typed_only", lookback_days=3650, started_by="test", storage=storage,
+                                   config=dict(TEST_CONFIG))
+    assert second["stats"]["new_after_dedup"] == 2 and second["stats"]["ai_findings"] > 0
+
+
+def test_no_results_placeholder_from_a_scraper_is_an_empty_result_not_a_failure():
+    from adapters.apify_linkedin_adapter import ApifyProfileAdapter
+    calls = []
+
+    def runner(actor_id, actor_input, token, max_charge, wait):
+        calls.append(actor_id)
+        return [{"noResults": True}], 0.0
+
+    adapter = ApifyProfileAdapter(token="t", actors=[{"id": "a/one", "input": lambda u, n, d: {}},
+                                                     {"id": "b/two", "input": lambda u, n, d: {}}], runner=runner)
+    out = adapter.fetch_profile("https://x.com/someone", "S — X", lookback_days=30)
+    assert out["items"] == [] and out["stats"]["error"] is None and not out["stats"]["notices"]
+    assert calls == ["a/one"]  # no fallback attempt, nothing failed

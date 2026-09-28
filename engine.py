@@ -131,7 +131,7 @@ WEB_SEARCH_USD = 0.01  # Anthropic's price per web search request
 def _find_similar_voices(storage: StorageBackend, client_id: str, stream: str, run_id: str, competitors: List[str],
                           lookback_days: int, config: dict):
     """For each competitor in this run, 2 other people who write about essentially the same things (by web
-    search, within the scope of the rules). -> ({competitor: [people]}, cost_usd)."""
+    search, within the scope of the rules). -> ({competitor: [people]}, cost_usd, [error messages])."""
     from pipeline import suggestions
     saved = {r.get("competitor"): r for r in storage.get_saved_items(client_id, stream, active_only=False)}
     followed = [n for n in saved if n] + list(competitors)
@@ -151,7 +151,7 @@ def _find_similar_voices(storage: StorageBackend, client_id: str, stream: str, r
         from pipeline.costs import llm_cost_usd
         cost = (llm_cost_usd(config, suggestions.SUGGEST_MODEL, usage.get("input", 0), usage.get("output", 0))
                 + WEB_SEARCH_USD * usage.get("searches", 0))
-    return out, cost
+    return out, cost, ([usage["error"]] if usage.get("error") else [])
 
 
 def run_stream(
@@ -228,11 +228,11 @@ def run_stream(
         map_rows = competitor_map.build_map(sources, fetch_result["items"], lookback_days, DEFAULT_MAX_POSTS)
         map_text = competitor_map.format_map(map_rows, lookback_days, DEFAULT_MAX_POSTS)
         show_map = lookback_days >= competitor_map.MONTHLY_MIN_DAYS or map_requested
-        similar, similar_cost = {}, 0.0
-        if map_requested and not dry_run:
+        similar, similar_cost, similar_errors = {}, 0.0, []
+        if map_requested and not dry_run and not extract_result.get("fatal_error"):
             competitors = list(dict.fromkeys(s["name"].partition(" — ")[0] for s in sources))
-            similar, similar_cost = _find_similar_voices(storage, client_id, stream, run_id, competitors,
-                                                         lookback_days, config)
+            similar, similar_cost, similar_errors = _find_similar_voices(
+                storage, client_id, stream, run_id, competitors, lookback_days, config)
             comment["summary"].append(
                 f"{run_comment.MAP_TRIGGER}: posting activity and {SIMILAR_PER_COMPETITOR} similar people per "
                 f"competitor were added to the Competitor_map tab")
@@ -256,6 +256,7 @@ def run_stream(
             "sources_returning_zero": fetch_result["sources_returning_zero"],
             "items_collected": len(fetch_result["items"]),
             "findings_extracted": extract_result["signals_extracted"],
+            "ai_failed": extract_result.get("failed", 0), "ai_error": extract_result.get("first_error"),
         }
         digest_usage: dict = {}
         digest = synthesis.run_synthesis_phase(
@@ -311,7 +312,14 @@ def run_stream(
         f"verified={stats['quote_verified']}, errors={stats['errors']}"
     )
 
-    return {"run_id": run_id, "digest": digest, "stats": stats, "notices": fetch_result.get("notices", []),
+    notices = list(fetch_result.get("notices", []))
+    if extract_result.get("failed"):
+        notices.insert(0, f"The AI could not analyse {extract_result['failed']} post(s): "
+                          f"{extract_result.get('first_error')} Nothing was lost — the posts are kept and will "
+                          f"be analysed the next time you run them. Each one is listed in the AI_log tab.")
+    if similar_errors:
+        notices.append(f"The search for similar people failed: {similar_errors[0]}")
+    return {"run_id": run_id, "digest": digest, "stats": stats, "notices": notices,
             "competitor_map": map_text if show_map else "", "similar_voices": similar, "video_candidates": videos,
             "comment_summary": comment["summary"], "comment_warnings": comment["warnings"]}
 

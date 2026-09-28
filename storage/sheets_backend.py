@@ -317,8 +317,14 @@ class SheetsBackend(StorageBackend):
     def get_dedup_index(self, client_id: str, stream: str) -> DedupIndex:
         from storage.backend import normalize_title
 
+        # Only items the AI actually looked at count as "already collected". One the AI never analysed
+        # (its call failed, e.g. a usage limit) has no successful AI_log row, so it is picked up again next run.
+        analysed = {r["item_url"] for r in self._read_rows("AI_log")
+                    if not str(r.get("verdict", "")).startswith("failed")}
         index = DedupIndex()
         for row in self._read_rows("Collected"):
+            if row.get("url") not in analysed:
+                continue
             if row.get("content_hash"):
                 index.content_hashes.add(row["content_hash"])
             if row.get("url"):

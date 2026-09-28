@@ -199,6 +199,12 @@ def test_dedup_index_round_trips():
         "content_hash": "abc123", "published_date": "2026-01-01", "fetched_at": "2026-01-01",
     }])
 
+    # Collected but never analysed (the AI call failed): must NOT count as already seen.
+    assert not backend.get_dedup_index("ksenia", "competitor_monitoring").contains({"source_url": "https://fake.test/seen"})
+    backend.save_ai_log_batch(run_id, [{"item_url": "https://fake.test/seen", "verdict": "failed: usage limit"}])
+    assert not backend.get_dedup_index("ksenia", "competitor_monitoring").contains({"source_url": "https://fake.test/seen"})
+    backend.save_ai_log_batch(run_id, [{"item_url": "https://fake.test/seen", "verdict": "nothing"}])  # analysed later
+
     index = backend.get_dedup_index("ksenia", "competitor_monitoring")
     assert index.contains({"source_url": "https://fake.test/seen"}), "Known URL should be flagged as duplicate"
     assert index.contains({"content_hash": "abc123"}), "Known content hash should be flagged as duplicate"

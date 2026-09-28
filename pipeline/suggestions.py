@@ -93,6 +93,9 @@ def _search_people(prompt: str, existing_names: List[str], n: int, model: str, u
         items = json.loads(m.group(0)) if m else []
     except Exception as e:
         logger.error(f"Suggesting people failed: {e}")
+        if usage_out is not None:
+            usage_out["error"] = " ".join(str(getattr(e, "body", {}).get("error", {}).get("message", e)
+                                              if isinstance(getattr(e, "body", None), dict) else e).split())[:300]
         return []
     out = []
     for it in items:
@@ -111,12 +114,12 @@ def _search_people(prompt: str, existing_names: List[str], n: int, model: str, u
 
 
 def suggest_new_voices(digest_text: str, existing_names: List[str], n: int = 5,
-                       model: str = SUGGEST_MODEL) -> List[Dict]:
+                       model: str = SUGGEST_MODEL, usage_out: dict = None) -> List[Dict]:
     """People who write closely on the topics of the whole digest. [] if the search fails."""
     if not digest_text.strip():
         return []
     return _search_people(PROMPT.format(digest=digest_text[:8000], n=n + 3,
-                                        existing=", ".join(existing_names) or "none"), existing_names, n, model)
+                                        existing=", ".join(existing_names) or "none"), existing_names, n, model, usage_out)
 
 
 def similar_voices(name: str, about: str, rules: str, existing_names: List[str], n: int = 2,

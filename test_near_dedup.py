@@ -20,6 +20,7 @@ def test_near_dups():
     run = st.start_run("c", "s", "t", [], "typed_only")
     # earlier run already collected BASE
     st.save_collected_items(run, "s", [item("https://a/1", "Burnout post", BASE, "h1")])
+    st.save_ai_log_batch(run, [{"item_url": "https://a/1", "verdict": "nothing", "raw_ai_response": ""}])  # analysed
     run2 = st.start_run("c", "s", "t", [], "typed_only")
     items = [
         item("https://b/2", "Repost with edits", BASE.replace("quietly", "silently"), "h2"),  # near dup of collected

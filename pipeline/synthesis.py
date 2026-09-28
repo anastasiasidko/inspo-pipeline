@@ -165,7 +165,10 @@ def run_synthesis_phase(config: dict, storage: StorageBackend, client_id: str, r
     date_range = _format_date_range(days_back)
     lines = [f"Digest, {date_range}", ""]
 
-    if not findings:
+    if not findings and (run_coverage or {}).get("ai_failed"):
+        lines += [f"Nothing to report yet: the AI could not analyse {run_coverage['ai_failed']} collected post(s) "
+                  f"({run_coverage.get('ai_error')}). They will be analysed on the next run.", ""]
+    elif not findings:
         lines += ["No new content found from the selected channels in this period.", ""]
     else:
         conclusions = _call_llm_for_conclusions(grouped, model, config, usage_out) if not dry_run else {}

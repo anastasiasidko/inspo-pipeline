@@ -232,6 +232,7 @@ class ApifyProfileAdapter:
                 raw, cost = self.runner(actor_id, actor["input"](profile_url, self.max_posts, lookback_days),
                                         self.token, actor.get("max_charge", self.max_charge), self.wait_seconds)
                 stats["cost_usd"] += cost
+                raw = [i for i in raw if not (isinstance(i, dict) and i.get("noResults"))]  # "no posts" placeholder
                 posts = [p for p in (normalize_post(i, source_name, actor_id) for i in raw) if p]
                 if raw and not posts:
                     raise ValueError("output format not recognised (no text/url fields)")

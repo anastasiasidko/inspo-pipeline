@@ -249,10 +249,14 @@ else:
         if st.button("Suggest people to follow"):
             with st.spinner("Searching the web…"):
                 followed = [r.get("competitor") for r in get_storage().get_saved_items(CLIENT_ID, STREAM, active_only=False)]
-                state.suggestions = suggest_new_voices(state.digest, [n for n in followed + state.names if n])
+                usage = {}
+                state.suggestions = suggest_new_voices(state.digest, [n for n in followed + state.names if n],
+                                                       usage_out=usage)
+                state.suggestions_error = usage.get("error")
             st.rerun()
     elif not state.suggestions:
-        st.info("No suggestions came back with a source I could check. Try again later.")
+        st.info("No suggestions came back with a source I could check. Try again later."
+                if not state.get("suggestions_error") else f"The search failed: {state.suggestions_error}")
     else:
         for i, p in enumerate(state.suggestions):
             st.markdown(f"**{p['name']}** — {p['why']}  \n[Where I found them]({p['url']})")

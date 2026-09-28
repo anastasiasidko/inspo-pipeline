@@ -115,9 +115,10 @@ class InMemoryBackend(StorageBackend):
             r["run_id"] for r in self.runs.values()
             if r["client_id"] == client_id and r["stream"] == stream
         }
+        analysed = {r["item_url"] for r in self.ai_log if not str(r.get("verdict", "")).startswith("failed")}
         index = DedupIndex()
         for item in self.collected:
-            if item["run_id"] not in run_ids_for_client:
+            if item["run_id"] not in run_ids_for_client or item.get("source_url") not in analysed:
                 continue
             if item.get("content_hash"):
                 index.content_hashes.add(item["content_hash"])
