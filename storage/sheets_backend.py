@@ -73,7 +73,7 @@ TAB_HEADERS = {
 }
 
 # The engine still says "stream"; in the sheet those are the two Rules cells.
-RULE_PARTS = {"general": "General", "competitor_monitoring": "Competitors"}
+RULE_PARTS = {"general": "General", "competitor_monitoring": "Competitors", "trend_research": "Trends"}
 
 MAX_TEXT_CHARS = 45_000  # per the brief: Collected.text is cut at 45,000 chars
 
@@ -124,7 +124,14 @@ def _from_json_cell(value):
 
 class SheetsBackend(StorageBackend):
     def __init__(self, sheet_id: str, credentials_path: Optional[str] = None,
-                 credentials_json: Optional[str] = None):
+                 credentials_json: Optional[str] = None, settings_tab: str = "Settings",
+                 entity_column: str = "competitor", extra_tabs: Optional[Dict[str, List[str]]] = None):
+        """
+        settings_tab/entity_column let a second stream (e.g. Trend research) point the
+        Settings-equivalent tab and its name column at different sheet text ("Sources"/
+        "source") without touching Competitors, which uses the defaults. extra_tabs adds
+        tabs beyond the base schema (e.g. Headlines) to this instance only.
+        """
         if not credentials_path and not credentials_json:
             raise ValueError("Provide either credentials_path or credentials_json")
 
@@ -140,15 +147,24 @@ class SheetsBackend(StorageBackend):
         self._worksheets: Dict[str, "gspread.Worksheet"] = {}
         self._headers_cache: Dict[str, List[str]] = {}
 
+        self._settings_tab = settings_tab
+        self._entity_col = entity_column
+        base_headers = dict(TAB_HEADERS)
+        if settings_tab != "Settings":
+            cols = base_headers.pop("Settings")
+            base_headers[settings_tab] = [entity_column if c == "competitor" else c for c in cols]
+        self._tab_headers = {**base_headers, **(extra_tabs or {})}
+
     @classmethod
-    def from_env(cls) -> "SheetsBackend":
-        sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    def from_env(cls, sheet_id_env: str = "GOOGLE_SHEET_ID", **kwargs) -> "SheetsBackend":
+        sheet_id = os.environ.get(sheet_id_env)
         if not sheet_id:
-            raise ValueError("GOOGLE_SHEET_ID is not set")
+            raise ValueError(f"{sheet_id_env} is not set")
         return cls(
             sheet_id=sheet_id,
             credentials_path=os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"),
             credentials_json=os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT"),
+            **kwargs,
         )
 
     # ---- worksheet access (cached, never re-opened per call) ----
@@ -177,7 +193,7 @@ class SheetsBackend(StorageBackend):
 
     def init(self) -> None:
         existing = {ws.title for ws in _with_backoff(self._spreadsheet.worksheets)()}
-        for tab_name, headers in TAB_HEADERS.items():
+        for tab_name, headers in self._tab_headers.items():
             if tab_name not in existing:
                 ws = _with_backoff(self._spreadsheet.add_worksheet)(
                     title=tab_name, rows=1000, cols=len(headers)
@@ -199,35 +215,35 @@ class SheetsBackend(StorageBackend):
 
     def get_saved_items(self, client_id: str, stream: str, active_only: bool = True) -> List[Dict]:
         """(client_id and stream are part of the engine's interface; a sheet holds only one of each.)"""
-        return [row for row in self._read_rows("Settings")
-                if (row.get("competitor") or "").strip() and (not active_only or _as_bool(row.get("active")))]
+        return [row for row in self._read_rows(self._settings_tab)
+                if (row.get(self._entity_col) or "").strip() and (not active_only or _as_bool(row.get("active")))]
 
     def add_saved_item(self, client_id: str, stream: str, kind: str, value: str,
                         added_by: str, notes: str = "") -> None:
-        self._append_rows("Settings", [{
-            "competitor": notes or value, "frequency": "weekly", "channels": value, "active": _bool_as_cell(True),
+        self._append_rows(self._settings_tab, [{
+            self._entity_col: notes or value, "frequency": "weekly", "channels": value, "active": _bool_as_cell(True),
         }])
 
     def upsert_competitor(self, client_id: str, stream: str, name: str, channels_text: str,
                            frequency: str = "weekly") -> None:
-        ws = self._ws("Settings")
-        col = {h: i for i, h in enumerate(self._headers("Settings"))}
+        ws = self._ws(self._settings_tab)
+        col = {h: i for i, h in enumerate(self._headers(self._settings_tab))}
         for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
-            if row[col["competitor"]] == name:
+            if row[col[self._entity_col]] == name:
                 _with_backoff(ws.batch_update)([
                     {"range": f"{_col_letter(col['channels'])}{row_num}", "values": [[channels_text]]},
                     {"range": f"{_col_letter(col['frequency'])}{row_num}", "values": [[frequency]]},
                     {"range": f"{_col_letter(col['active'])}{row_num}", "values": [["Y"]]},
                 ])
                 return
-        self._append_rows("Settings", [{
-            "competitor": name, "frequency": frequency, "channels": channels_text, "active": "Y"}])
+        self._append_rows(self._settings_tab, [{
+            self._entity_col: name, "frequency": frequency, "channels": channels_text, "active": "Y"}])
 
     def set_saved_item_active(self, client_id: str, stream: str, value: str, active: bool) -> None:
-        ws = self._ws("Settings")
-        col_idx = {h: i for i, h in enumerate(self._headers("Settings"))}
+        ws = self._ws(self._settings_tab)
+        col_idx = {h: i for i, h in enumerate(self._headers(self._settings_tab))}
         for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
-            if value in (row[col_idx["competitor"]], row[col_idx["channels"]]):
+            if value in (row[col_idx[self._entity_col]], row[col_idx["channels"]]):
                 _with_backoff(ws.update_cell)(row_num, col_idx["active"] + 1, _bool_as_cell(active))
                 return
 
@@ -475,6 +491,26 @@ class SheetsBackend(StorageBackend):
             "at_post_limit": "Y" if r.get("capped") else "", "similar_person": r.get("similar_person", ""),
             "why_similar": r.get("why_similar", ""), "reach": r.get("reach", ""), "source_url": r.get("source_url", ""),
         } for r in rows])
+
+    # ---- Headlines ----
+
+    def save_headlines(self, client_id: str, run_id: str, items: List[Dict]) -> None:
+        self._append_rows("Headlines", [{
+            "run_id": run_id, "source": item.get("source_name", ""), "title": item.get("title", ""),
+            "url": item.get("source_url", ""), "published_at": item.get("published_date", ""),
+            "status": "pending", "decided_at": "",
+        } for item in items])
+
+    def update_headline_status(self, run_id: str, url: str, status: str) -> None:
+        ws = self._ws("Headlines")
+        col = {h: i for i, h in enumerate(self._headers("Headlines"))}
+        for row_num, row in enumerate(_with_backoff(ws.get_all_values)()[1:], start=2):
+            if row[col["run_id"]] == run_id and row[col["url"]] == url:
+                _with_backoff(ws.batch_update)([
+                    {"range": f"{_col_letter(col['status'])}{row_num}", "values": [[status]]},
+                    {"range": f"{_col_letter(col['decided_at'])}{row_num}", "values": [[_now_iso()]]},
+                ])
+                return
 
     # ---- Digests ----
 

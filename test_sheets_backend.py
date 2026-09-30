@@ -100,13 +100,13 @@ class FakeWorksheetHandle:
         self._ws = ws
 
 
-def make_backend(existing_tabs=None):
+def make_backend(existing_tabs=None, **kwargs):
     fake_spreadsheet = FakeSpreadsheet(existing_tabs)
     mock_client = MagicMock()
     mock_client.open_by_key.return_value = fake_spreadsheet
 
     with patch("gspread.service_account", return_value=mock_client):
-        backend = SheetsBackend(sheet_id="fake-sheet-id", credentials_path="fake.json")
+        backend = SheetsBackend(sheet_id="fake-sheet-id", credentials_path="fake.json", **kwargs)
     return backend, fake_spreadsheet
 
 
@@ -278,6 +278,61 @@ def test_get_run_details_funnel_and_zero_twice_in_a_row():
     print()
 
 
+def test_trends_instance_gets_sources_tab_and_headlines_tab():
+    print("TEST: a settings_tab/entity_column/extra_tabs instance (Trend research) "
+          "gets a Sources tab and a Headlines tab, without touching the Competitors defaults")
+
+    backend, spreadsheet = make_backend(
+        existing_tabs={}, settings_tab="Sources", entity_column="source",
+        extra_tabs={"Headlines": ["run_id", "source", "title", "url", "published_at", "status", "decided_at"]},
+    )
+    backend.init()
+
+    assert "Sources" in spreadsheet._tabs and "Settings" not in spreadsheet._tabs
+    assert spreadsheet._tabs["Sources"]._headers[0] == "source"
+    assert "Headlines" in spreadsheet._tabs
+    print("  PASS — Sources tab (source column) and Headlines tab both created")
+
+    # get_saved_items / upsert_competitor route through the renamed tab+column correctly.
+    backend.upsert_competitor("ksenia", "trend_research", "Nature Neuroscience", "RSS: https://nature.test/rss")
+    saved = backend.get_saved_items("ksenia", "trend_research")
+    assert [r["source"] for r in saved] == ["Nature Neuroscience"]
+    print("  PASS — upsert_competitor/get_saved_items work against Sources/source")
+
+    # save_headlines writes pending rows; update_headline_status finds and updates by (run_id, url).
+    run_id = backend.start_run("ksenia", "trend_research", "anastasia", ["feed"], "typed_only")
+    backend.save_headlines("ksenia", run_id, [
+        {"source_name": "Nature", "title": "A finding", "source_url": "https://nature.test/1",
+         "published_date": "2026-01-01"},
+        {"source_name": "Nature", "title": "Another finding", "source_url": "https://nature.test/2",
+         "published_date": "2026-01-02"},
+    ])
+    rows = spreadsheet._tabs["Headlines"].get_all_records()
+    assert [r["status"] for r in rows] == ["pending", "pending"]
+
+    backend.update_headline_status(run_id, "https://nature.test/1", "approved")
+    rows = spreadsheet._tabs["Headlines"].get_all_records()
+    by_url = {r["url"]: r for r in rows}
+    assert by_url["https://nature.test/1"]["status"] == "approved"
+    assert by_url["https://nature.test/1"]["decided_at"], "decided_at should be stamped"
+    assert by_url["https://nature.test/2"]["status"] == "pending", "the other row must be untouched"
+    print("  PASS — save_headlines writes pending rows, update_headline_status updates just the right one")
+    print()
+
+
+def test_competitors_defaults_unaffected_by_settings_tab_feature():
+    print("TEST: a plain SheetsBackend() (no settings_tab/entity_column/extra_tabs) is byte-identical "
+          "to today's Competitors schema — the rename feature is fully opt-in")
+
+    backend, spreadsheet = make_backend(existing_tabs={})
+    backend.init()
+    assert "Settings" in spreadsheet._tabs and "Sources" not in spreadsheet._tabs
+    assert "Headlines" not in spreadsheet._tabs
+    assert spreadsheet._tabs["Settings"]._headers[0] == "competitor"
+    print("  PASS — Competitors keeps Settings/competitor and gets no Headlines tab")
+    print()
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("SheetsBackend — Local Contract Tests (gspread fully mocked)")
@@ -290,6 +345,8 @@ if __name__ == "__main__":
     test_dedup_index_round_trips()
     test_cleanup_purges_only_collected_and_ai_log()
     test_get_run_details_funnel_and_zero_twice_in_a_row()
+    test_trends_instance_gets_sources_tab_and_headlines_tab()
+    test_competitors_defaults_unaffected_by_settings_tab_feature()
 
     print("=" * 70)
     print("ALL TESTS PASSED")

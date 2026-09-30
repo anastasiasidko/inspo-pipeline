@@ -30,6 +30,7 @@ class InMemoryBackend(StorageBackend):
         self.ai_log: List[Dict] = []
         self.findings: List[Dict] = []
         self.digests: List[Dict] = []
+        self.headlines: List[Dict] = []
         self._run_counter = itertools.count(1)
         self._finding_counter = itertools.count(1)
 
@@ -213,6 +214,24 @@ class InMemoryBackend(StorageBackend):
     def save_competitor_map(self, client_id: str, run_id: str, window_days: int, rows: List[Dict]) -> None:
         self.competitor_map = getattr(self, "competitor_map", []) + [
             {**r, "run_id": run_id, "client_id": client_id, "window_days": window_days} for r in rows]
+
+    # ---- Headlines ----
+
+    def save_headlines(self, client_id: str, run_id: str, items: List[Dict]) -> None:
+        for item in items:
+            self.headlines.append({
+                "client_id": client_id, "run_id": run_id,
+                "source": item.get("source_name", ""), "title": item.get("title", ""),
+                "url": item.get("source_url", ""), "published_at": item.get("published_date", ""),
+                "status": "pending", "decided_at": "",
+            })
+
+    def update_headline_status(self, run_id: str, url: str, status: str) -> None:
+        for row in self.headlines:
+            if row["run_id"] == run_id and row["url"] == url:
+                row["status"] = status
+                row["decided_at"] = _now_iso()
+                return
 
     # ---- Digests ----
 

@@ -198,6 +198,17 @@ class StorageBackend(ABC):
         """One row per competitor and channel: posts and posts per week in the window."""
         ...
 
+    # ---- Headlines (the headline-approval gate: scan first, approve, then extract) ----
+
+    @abstractmethod
+    def save_headlines(self, client_id: str, run_id: str, items: List[Dict]) -> None:
+        """One row per scraped item, status="pending" — written before any AI cost is spent.
+        items: the same shape Collected rows use (source, url, title, published_at, ...)."""
+
+    @abstractmethod
+    def update_headline_status(self, run_id: str, url: str, status: str) -> None:
+        """Find the row for (run_id, url) and set its status ("approved"/"rejected") + decided_at."""
+
     # ---- Troubleshooting / Results drill-down ----
 
     @abstractmethod

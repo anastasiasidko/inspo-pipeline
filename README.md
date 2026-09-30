@@ -1,8 +1,15 @@
-# Inspo Competitors — Competitor Monitoring
+# Inspo — Competitor Monitoring + Trend Research
 
-A fixed-sequence pipeline that watches competitor sources, extracts structured findings, and periodically synthesizes them into a digest. This is **not** an autonomous agent — every step is deterministic and debuggable.
+A fixed-sequence pipeline that watches sources, extracts structured findings, and periodically synthesizes them into a digest. This is **not** an autonomous agent — every step is deterministic and debuggable.
 
-Shared by Anastasia and Ksenia through one Google Sheet, **"Inspo competitors"**. Each part of Inspo is its own app with its own spreadsheet; this one is only about competitors, so the sheet has no stream or client columns. The engine (all the logic) never knows which storage it's talking to or which screen is calling it; see **Architecture** below.
+Two streams share this one app and this one engine/pipeline code, each with its **own Google Sheet**:
+- **Competitors** — sheet **"Inspo competitors"**. Type names, AI finds their channels, approve, get a digest.
+- **Trend research** (`Trends/`) — sheet **"Inspo Trends"**. Type journal/newsletter names and paste their
+  links directly (no AI channel discovery), scan for headlines, **approve or disapprove each headline**
+  before anything gets analyzed, then get a digest from just the approved items. See `Trends/README.md`.
+
+Neither sheet has stream or client columns — see **Architecture** below for why each stream gets its own
+spreadsheet rather than a shared one with a stream column.
 
 ## What It Does
 
@@ -20,6 +27,7 @@ Every finding, raw item, AI verdict, and digest is saved to a shared Google Shee
 - **Find channels automatically** (`pipeline/channel_discovery.py`): type a name, Claude (Haiku 4.5 + web search; Sonnet 5 was about three times dearer) finds their website, newsletter, LinkedIn, X, etc. Every link is checked against the search results; sales pages are skipped; the person reviews before anything runs.
 - **Scrapers with fallback** (`adapters/apify_linkedin_adapter.py`, `adapters/scraper_registry.py`): LinkedIn and X have ordered lists of Apify actors — if one breaks, the next is used and the switch is reported. A platform with no scraper gets one looked up in Apify's Store automatically (spend-capped, saved in `scrapers.json`, marked unverified until it returns real data).
 - **Only typed names run**: the app collects only the competitors typed in that session, never every row in Settings.
+- **Trend research's headline-approval gate** (`Trends/trend_app.py`, `engine.run_headline_scan`/`run_digest_from_headlines`): unlike Competitors, this stream scrapes just the headline/title/link of each item first — no AI cost — and shows them for you to Approve or Disapprove one by one. Only approved items go through Extract/Score/Synthesize. The decisions are logged to the Trends sheet's Headlines tab for QA.
 - **Newsletters with no public feed** (`adapters/newsletter_signup.py`, `adapters/gmail_client.py`, `pipeline/newsletter_routing.py`): a Subscribe button submits the signup form (never bypasses a CAPTCHA — those need a manual signup). The app's own Gmail login then creates a "Competitors" label and a filter so those emails skip the inbox. Setup: enable the Gmail API in the Google Cloud project, create a Desktop-app OAuth client, put its JSON path in `GOOGLE_GMAIL_OAUTH_CLIENT`, and click Allow once. While the Google app is in **Testing** mode, Google expires the login about every 7 days, so that click repeats weekly.
 - **Video approval** (`pipeline/media.py`): posts that are relevant and carry a video are listed with the video's length. Nothing is fetched until approved; then an Apify transcript actor (looked up in the Store, capped at $0.10 per run, falls back to the next actor) fetches it and the transcript goes through the normal extraction, quote check and digest under the post's author. Only videos, not images. The video field names are not yet confirmed against a real video post.
 - **Competitor map** (`pipeline/competitor_map.py`, tab `Competitor_map`): posts and posts per week per competitor and channel, counted from everything the scrapers returned before dedup and the relevance filter. No engagement. Computed and saved only for runs with a look-back of 28+ days; social channels at the per-profile post limit (30) are flagged.
@@ -62,6 +70,18 @@ Fill in `ANTHROPIC_API_KEY`, `GOOGLE_SHEET_ID`, and `GOOGLE_SERVICE_ACCOUNT_JSON
 python migrate_config_to_sheets.py
 ```
 Seeds the Settings and Rules tabs with the sources and ruleset this project started with. Safe to skip and add your own directly once the sheet exists.
+
+### 5. Optional: set up Trend research's own sheet
+Trend research uses a second, separate spreadsheet ("Inspo Trends") with the same service account —
+no new Google Cloud project needed. **The Google Drive API must also be enabled** for this project
+(Sheets API alone isn't enough to create a new spreadsheet via the API): APIs & Services → Library →
+search "Google Drive API" → Enable. Then:
+```bash
+python Trends/create_trends_sheet.py
+```
+Creates "Inspo Trends", shares it with you, creates its tabs (including the Trend-only Headlines tab),
+and prints the ID to add to `.env` as `GOOGLE_SHEET_ID_TRENDS`. Fill in its Rules tab (General + Trends
+rows) before running Trend research — see `backups/rules-for-other-inspo-parts.md` for a starting draft.
 
 ### Run the Pipeline
 ```bash
@@ -113,7 +133,7 @@ Google's default quota is 100 read/write requests per 100 seconds per user. Ever
 
 ## Sheet Schema
 
-Tabs, created automatically on first connection (`storage.init()`). The exact headers live in `TAB_HEADERS` in `storage/sheets_backend.py`. One spreadsheet is one app for one client, so there are no stream or client_id columns (the engine's `stream`/`client_id` arguments are accepted and ignored by the Sheets backend).
+Tabs, created automatically on first connection (`storage.init()`). The exact headers live in `TAB_HEADERS` in `storage/sheets_backend.py`. One spreadsheet is one app for one client, so there are no stream or client_id columns (the engine's `stream`/`client_id` arguments are accepted and ignored by the Sheets backend). This is the **Competitors** sheet's schema:
 
 ```
 Settings   competitor, frequency, channels, positioning, keywords, active
@@ -140,13 +160,25 @@ Competitor_map  run_id, created_at, competitor, channel, posts, posts_per_week,
 
 Collected and AI_log rows older than 30 days are purged automatically at the end of every run (`cleanup_old_data`). Findings/Digests/Runs/Settings/Rules are kept forever.
 
+**Trend research's "Inspo Trends" sheet** is the same schema with two differences, both opt-in via `SheetsBackend`'s `settings_tab`/`entity_column`/`extra_tabs` params (Competitors keeps the defaults, untouched):
+- `Settings` is renamed **`Sources`**, and its `competitor` column is renamed **`source`** — same shape, journal/newsletter names instead of people.
+- One extra tab, **`Headlines`**: `run_id, source, title, url, published_at, status, decided_at` — every scraped headline, `status` = `pending`/`approved`/`rejected`, written before extraction so the approval screen (and this sheet, for QA) shows what was scraped and what you decided about it.
+
+See `Trends/README.md` for the rest of what's different in that stream.
+
 ## Local Operational Config (`config.yaml`)
 
 Only technical/cost settings live here now — model choice, the signal-type taxonomy, timeouts. The source list and relevance ruleset are **not** here anymore; they live in the Sheet's Settings/Rules tabs so both people can read and edit them without touching code. See `config.py`'s `load_local_config()`.
 
 ## Extending This
 
-**Another part of Inspo** (industry trends, social listening, …) is a separate app with its own spreadsheet, not another stream in this one. The rules that were written for those parts were removed from this sheet and saved in `backups/rules-for-other-inspo-parts.md` (local, not in Git).
+**Another part of Inspo** (social listening, creative inspiration, …): Trend research (`Trends/`) shows the
+pattern that was used — same app, same engine/pipeline code, its own spreadsheet, and a `Trends/`-style
+folder for anything stream-only (config, screen code, setup script). A stream that also needs new adapters
+or a materially different flow (like Trend research's headline-approval gate — `engine.run_headline_scan`/
+`run_digest_from_headlines`) adds those as new, additive functions; `run_stream()` itself is never changed
+by a new stream. The rules originally drafted for these other parts, before this repo settled on
+Competitors-only, are saved in `backups/rules-for-other-inspo-parts.md` (local, not in Git).
 
 **Restructuring an existing sheet**: `python migrate_sheet_to_competitors_only.py` (one-time, idempotent) backs up every tab to `backups/`, drops the stream/client columns, keeps only the General and Competitors rules, removes the empty default tab and renames the spreadsheet.
 

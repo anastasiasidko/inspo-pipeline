@@ -1,0 +1,56 @@
+# Trend research — local operational config (model choice, signal taxonomy,
+# timeouts). Same shape and rules as ../config.yaml — see that file's comments
+# for what belongs here vs. in the Google Sheet's Sources/Rules tabs. This one
+# lives in Trends/ rather than being picked up by config.py's config_<stream>.yaml
+# convention, because it's loaded explicitly by path from Trends/trend_app.py.
+
+stream: "trend_research"
+
+# Cheap model that reads every approved headline and decides what's worth flagging.
+extraction_model: "claude-haiku-4-5-20251001"
+
+# Stronger model that writes the digest (one call per run, so cost stays small).
+synthesis_model: "claude-opus-5"
+
+# Default digest window in days — the screen's "Look back" selector overrides
+# this per run; this is just the fallback.
+digest_window_days: 14
+
+# ============================================================================
+# SIGNAL TYPES — Named types for extraction results
+# ============================================================================
+# Tuned for research/industry findings rather than competitor moves.
+signal_types:
+  - research_finding      # a study, report, or data point worth knowing
+  - methodology_shift      # a change in how something is measured/done in the field
+  - funding_news           # investment, grants, acquisitions relevant to the space
+  - platform_change        # a platform/tooling change affecting the field
+  - other                  # escape hatch: required explanatory note when used
+
+signal_category_map:
+  research_finding: "research"
+  methodology_shift: "research"
+  funding_news: "market"
+  platform_change: "market"
+
+# novelty: a new entity+signal_type combo scores high, a repeat scores low.
+scoring_direction: "novelty"
+
+# Texts at least this similar (0-1, word-overlap) to something already collected
+# are skipped before the AI sees them.
+near_duplicate_threshold: 0.8
+
+# Local convenience copy of the digest, for reading from the terminal.
+digest_path: "./Trends/digest_trends.md"
+
+log_level: "INFO"
+log_file: "./pipeline.log"
+
+request_timeout_seconds: 30
+
+# Price per 1,000 tokens — same table as config.yaml.
+model_prices:
+  claude-haiku-4-5-20251001: {input: 0.001, output: 0.005}
+  claude-sonnet-5:           {input: 0.002, output: 0.010}
+  claude-opus-5:             {input: 0.005, output: 0.025}
+  claude-fable-5-1:          {input: 0.010, output: 0.050}

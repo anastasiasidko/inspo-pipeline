@@ -1,8 +1,14 @@
 """
-Inspo — three simple screens over the engine:
+Inspo — two streams, picked from the sidebar:
+
+Competitors — three simple screens over the engine:
   1. Type competitor names
   2. Review the channels found for each (edit, add links), then approve
   3. Read the digest
+
+Trend research — Trends/trend_app.py, same shape plus a headline-approval
+gate: scan headlines first, approve/disapprove each one, then get the digest
+from just the approved items. Its own Google Sheet (GOOGLE_SHEET_ID_TRENDS).
 
 Everything the pipeline does is still recorded in the Google Sheet, which is
 for QA; this app is only for input and a clean result.
@@ -27,7 +33,7 @@ load_dotenv()
 
 # Streamlit Cloud secrets -> the env vars the engine reads (only if a secrets file exists).
 if any(p.exists() for p in (Path.home() / ".streamlit" / "secrets.toml", Path(__file__).parent / ".streamlit" / "secrets.toml")):
-    for key in ("ANTHROPIC_API_KEY", "APIFY_TOKEN", "GOOGLE_SHEET_ID",
+    for key in ("ANTHROPIC_API_KEY", "APIFY_TOKEN", "GOOGLE_SHEET_ID", "GOOGLE_SHEET_ID_TRENDS",
                 "GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT"):
         if key not in os.environ and key in st.secrets:
             os.environ[key] = st.secrets[key]
@@ -46,19 +52,34 @@ def get_storage():
     return storage
 
 
+@st.cache_resource
+def get_storage_trends():
+    from storage.sheets_backend import SheetsBackend
+    from Trends.trend_app import HEADLINES_TAB
+    storage = SheetsBackend.from_env(sheet_id_env="GOOGLE_SHEET_ID_TRENDS", settings_tab="Sources",
+                                     entity_column="source", extra_tabs=HEADLINES_TAB)
+    storage.init()
+    return storage
+
+
 state = st.session_state
+mode = st.sidebar.radio("Inspo", ["Competitors", "Trend research"], key="app_mode")
 state.setdefault("step", 1)
 
-sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
+sheet_id = os.environ.get("GOOGLE_SHEET_ID_TRENDS" if mode == "Trend research" else "GOOGLE_SHEET_ID", "")
 head_left, head_right = st.columns([3, 1])
-head_left.title("Inspo")
+head_left.title("Inspo — Trend research" if mode == "Trend research" else "Inspo")
 if sheet_id:
     head_right.link_button("Open Google Sheet", f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit")
 st.text_input("Email to use for newsletter signups", value=DEFAULT_SIGNUP_EMAIL, key="signup_email")
 
 
 # ---------------------------------------------------------------- step 1
-if state.step == 1:
+if mode == "Trend research":
+    from Trends import trend_app
+    trend_app.render(get_storage_trends, state.get("signup_email", DEFAULT_SIGNUP_EMAIL))
+
+elif state.step == 1:
     st.subheader("1. Who do you want to follow?")
     st.info("Only the names you type here are collected. Other competitors saved in the Settings tab "
             "of the Google Sheet are not run.")

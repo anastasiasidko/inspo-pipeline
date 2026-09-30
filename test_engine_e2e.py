@@ -231,6 +231,60 @@ def test_no_findings_still_logs_ai_log_entry():
     print()
 
 
+def test_headline_approval_flow():
+    print("TEST: run_headline_scan (no AI cost) -> approve one item -> run_digest_from_headlines "
+          "(AI runs on just the approved item)")
+
+    import feedparser
+    storage = InMemoryBackend()
+    pre_parsed = feedparser.parse(FAKE_FEED_XML)
+    trend_config = dict(TEST_CONFIG, stream="trend_research")
+
+    with patch("feedparser.parse", return_value=pre_parsed), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic") as mock_anthropic_cls:
+
+        scan = engine.run_headline_scan(
+            stream="trend_research", inputs=["http://fake-url.test/feed"], mode="typed_only",
+            lookback_days=3650, started_by="test", client_id="ksenia", storage=storage,
+            config=dict(trend_config), dry_run=False,
+        )
+        assert not mock_anthropic_cls.called, "run_headline_scan must not call the LLM — it's free"
+    print(f"  PASS — scanned {len(scan['headlines'])} headline(s), zero AI calls")
+
+    assert len(scan["headlines"]) == 2, scan["headlines"]
+    headline_rows = [row for row in storage.headlines if row["run_id"] == scan["run_id"]]
+    assert len(headline_rows) == 2 and all(r["status"] == "pending" for r in headline_rows)
+    print("  PASS — both scraped headlines logged to storage as pending, before any AI cost")
+
+    approved = scan["headlines"][:1]  # approve just the first of the two
+
+    with patch("anthropic.Anthropic") as mock_anthropic_cls:
+        mock_anthropic_cls.return_value = make_mock_anthropic_client()
+        os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+        result = engine.run_digest_from_headlines(
+            run_id=scan["run_id"], approved_items=approved, stream="trend_research",
+            lookback_days=3650, started_by="test", client_id="ksenia", storage=storage,
+            config=dict(trend_config), dry_run=False,
+        )
+        assert mock_anthropic_cls.call_count >= 1 or mock_anthropic_cls.return_value.messages.create.called
+
+    findings = [f for f in storage.findings if f["run_id"] == scan["run_id"]]
+    assert len(findings) == 2, findings  # MOCK_LLM_RESPONSE has 2 findings, from the 1 approved article
+    print(f"  PASS — extraction ran on just the 1 approved item ({len(findings)} findings, not the disapproved one)")
+
+    approved_url = approved[0]["source_url"]
+    approved_status = [r["status"] for r in storage.headlines
+                       if r["run_id"] == scan["run_id"] and r["url"] == approved_url]
+    assert approved_status == ["approved"], approved_status
+    print("  PASS — the approved headline's row status was updated")
+
+    assert storage.get_digest(scan["run_id"]) is not None, "digest must be saved under the run_headline_scan run_id"
+    assert result["stats"]["status"] == "done"
+    print("  PASS — digest saved under the same run_id the scan opened")
+    print()
+
+
 def test_rerunning_is_idempotent(storage):
     print("TEST: running the same fetch+dedup twice adds zero new Collected rows")
 
@@ -254,6 +308,7 @@ if __name__ == "__main__":
     test_entity_is_the_author_not_a_mentioned_company()
     storage = test_full_engine_run()
     test_no_findings_still_logs_ai_log_entry()
+    test_headline_approval_flow()
     test_rerunning_is_idempotent(storage)
 
     print("=" * 70)
