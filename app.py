@@ -21,7 +21,7 @@ from pipeline import newsletter_routing
 from adapters.scraper_registry import has_scraper, platform_of, pretty
 from pipeline.channel_discovery import discover_channels
 from pipeline import media, usage_log
-from pipeline.suggestions import suggest_new_voices
+from pipeline.suggestions import suggest_new_voices, voices_on_topic
 
 load_dotenv()
 
@@ -184,6 +184,8 @@ elif state.step == 2:
                     state.digest, state.skipped, state.notices, state.step = result["digest"], skipped, result.get("notices", []), 3
                     state.map_text, state.videos = result.get("competitor_map", ""), result.get("video_candidates", [])
                     state.similar = result.get("similar_voices", {})
+                    state.topics_by_entity = result.get("topics_by_entity", {})
+                    state.topic_results, state.free_topic_result = {}, None
                     state.video_done, state.suggestions = {}, None
                 except Exception as e:
                     st.error(f"The run failed: {e}")
@@ -219,6 +221,65 @@ else:
                 if st.button(f"Add {p['name']} to competitors", key=f"sim_{comp}_{j}"):
                     state.prefill_name, state.step = p["name"], 1
                     st.rerun()
+
+    def _show_people(people, key_prefix):
+        if not people:
+            st.caption("No suggestions came back with a source I could check.")
+        for j, p in enumerate(people):
+            st.markdown(f"{p['name']} — {p['why']}  \n[Where I found them]({p['url']})")
+            st.caption(f"Reach: {p['reach']}" if p["reach"] else "Reach: not found in the search results")
+            if st.button(f"Add {p['name']} to competitors", key=f"{key_prefix}_{j}"):
+                state.prefill_name, state.step = p["name"], 1
+                st.rerun()
+
+    def _entity_paragraph(digest_text, entity):
+        # Mirrors how synthesis.py writes the digest: entity, then its paragraph, on the next line.
+        lines = digest_text.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip() == entity and i + 1 < len(lines):
+                return lines[i + 1]
+        return digest_text  # fallback: the whole digest still gives the search something to anchor on
+
+    if state.get("topics_by_entity"):
+        st.subheader("Explore a topic")
+        st.caption("Find people, not already followed, who write about this same specific thing — not just the "
+                   "same broad field. Nothing runs until you click a button.")
+        followed_all = [r.get("competitor") for r in get_storage().get_saved_items(CLIENT_ID, STREAM, active_only=False)]
+        for entity, topics in state.topics_by_entity.items():
+            if not topics:
+                continue
+            st.markdown(f"**{entity}**")
+            cols = st.columns(len(topics))
+            for i, (col, topic) in enumerate(zip(cols, topics)):
+                if col.button(topic, key=f"topic_{entity}_{i}"):
+                    with st.spinner("Searching the web…"):
+                        found = voices_on_topic(topic, _entity_paragraph(state.digest, entity),
+                                                get_storage().get_rules(CLIENT_ID, STREAM).get("rules_text", ""),
+                                                [n for n in followed_all + state.names if n])
+                        usage_log.flush(get_storage())
+                    state.topic_results[f"{entity}||{topic}"] = found
+            for key, people in list(state.topic_results.items()):
+                if key.startswith(f"{entity}||"):
+                    st.caption(f"Results for \"{key.split('||', 1)[1]}\":")
+                    _show_people(people, key_prefix=f"tp_{key}")
+
+        st.markdown("**Or describe what you want to explore**")
+        st.caption("For anything the buttons above don't cover — one topic at a time, in your own words. "
+                   "About $0.15 per search.")
+        free_topic = st.text_input("What do you want to explore?", key="free_topic", label_visibility="collapsed",
+                                   placeholder='e.g. the idea that a personal brand needs a "point of view"')
+        if st.button("Find who else wrote about this"):
+            if free_topic.strip():
+                with st.spinner("Searching the web…"):
+                    followed_all = [r.get("competitor") for r in get_storage().get_saved_items(CLIENT_ID, STREAM, active_only=False)]
+                    state.free_topic_result = voices_on_topic(
+                        free_topic, state.digest, get_storage().get_rules(CLIENT_ID, STREAM).get("rules_text", ""),
+                        [n for n in followed_all + state.names if n])
+                    usage_log.flush(get_storage())
+            else:
+                st.warning("Type what you want to explore first.")
+        if state.get("free_topic_result") is not None:
+            _show_people(state.free_topic_result, key_prefix="free_topic_res")
 
     if state.get("videos"):
         st.subheader("Videos worth a look")

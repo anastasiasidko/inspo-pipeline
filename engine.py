@@ -259,9 +259,10 @@ def run_stream(
             "ai_failed": extract_result.get("failed", 0), "ai_error": extract_result.get("first_error"),
         }
         digest_usage: dict = {}
+        digest_topics: dict = {}
         digest = synthesis.run_synthesis_phase(
             config, storage, client_id, run_id, stream,
-            run_coverage=run_coverage, dry_run=dry_run, usage_out=digest_usage,
+            run_coverage=run_coverage, dry_run=dry_run, usage_out=digest_usage, topics_out=digest_topics,
         )
         cost_parts = []
         if extract_result.get("est_cost"):
@@ -322,7 +323,8 @@ def run_stream(
         notices.append(f"The search for similar people failed: {similar_errors[0]}")
     return {"run_id": run_id, "digest": digest, "stats": stats, "notices": notices,
             "competitor_map": map_text if show_map else "", "similar_voices": similar, "video_candidates": videos,
-            "comment_summary": comment["summary"], "comment_warnings": comment["warnings"]}
+            "comment_summary": comment["summary"], "comment_warnings": comment["warnings"],
+            "topics_by_entity": digest_topics}
 
 
 def get_run_details(run_id: str, storage: Optional[StorageBackend] = None) -> Dict:

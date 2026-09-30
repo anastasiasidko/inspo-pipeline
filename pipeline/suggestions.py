@@ -38,6 +38,30 @@ Return JSON only, no other text:
 [{{"name": "...", "why": "...", "url": "https://...", "reach": null, "reach_source": null}}]"""
 
 
+TOPIC_PROMPT = """A digest for someone monitoring thought leadership said this:
+\"\"\"{context}\"\"\"
+
+The specific thing they want to explore further is: "{topic}"
+
+The scope that matters (rules of the person doing this research):
+{rules}
+
+Search the web and find {n} people who write about essentially this same specific thing — not just the same
+broad field, the same specific point — within that scope.
+Do NOT suggest anyone in this list of people already followed or already suggested: {existing}.
+
+For each person give:
+- "name"
+- "why": one or two sentences saying how what they write connects to "{topic}", based on pages you found.
+  Describe only what the pages show; do not add opinions.
+- "url": the page (their site, profile or a page about them) that you found them on. It must appear in your search results.
+- "reach": how many people follow or read them (for example "about 120,000 LinkedIn followers"), ONLY if a search
+  result states it; otherwise null. Never estimate.
+- "reach_source": the URL of the page that states the reach, or null.
+Return JSON only, no other text:
+[{{"name": "...", "why": "...", "url": "https://...", "reach": null, "reach_source": null}}]"""
+
+
 SIMILAR_PROMPT = """{name} is a thought leader / coach / consultant / creator.
 What they have been writing about recently (from their own posts):
 {about}
@@ -132,3 +156,15 @@ def similar_voices(name: str, about: str, rules: str, existing_names: List[str],
         name=name, about=(about or "no recent posts available")[:4000], rules=(rules or "none")[:4000],
         n=n + 2, existing=", ".join(existing_names) or "none")
     return _search_people(prompt, existing_names + [name], n, model, usage_out, purpose=f"Similar people: {name}")
+
+
+def voices_on_topic(topic: str, context: str, rules: str, existing_names: List[str], n: int = 5,
+                    model: str = SUGGEST_MODEL, usage_out: dict = None) -> List[Dict]:
+    """`n` people who write about one specific thing — not a whole competitor's body of work, one point
+    from the digest (`context` is the paragraph or text it came from, so the search stays anchored to
+    what was actually said, not just the bare topic word)."""
+    if not topic.strip():
+        return []
+    prompt = TOPIC_PROMPT.format(topic=topic.strip(), context=(context or "")[:4000], rules=(rules or "none")[:4000],
+                                 n=n + 2, existing=", ".join(existing_names) or "none")
+    return _search_people(prompt, existing_names, n, model, usage_out, purpose=f"Topic search: {topic.strip()}")

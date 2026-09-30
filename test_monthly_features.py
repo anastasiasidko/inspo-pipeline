@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, ".")
 
 import engine
+from test_engine_e2e import TEST_CONFIG, make_mock_anthropic_client
+from test_rss_local import FAKE_FEED_XML
 from adapters.apify_linkedin_adapter import normalize_post
 from pipeline import competitor_map, media, suggestions
 from storage.fake_backend import InMemoryBackend
@@ -155,3 +157,54 @@ def test_every_ai_call_is_logged_with_its_purpose_and_cost_and_flushed_to_the_sh
     storage = InMemoryBackend()
     usage_log.flush(storage)
     assert storage.api_usage[0]["purpose"] == "Find channels" and not usage_log._pending
+
+
+# ---------------------------------------------------------------- hot topic (per-topic voice search)
+def test_topics_by_entity_reuses_extracted_themes_deduped_and_capped():
+    from pipeline.synthesis import topics_by_entity
+    grouped = {
+        "Val Nelson": [
+            {"themes": ["AI overwhelm", "loss of control"]},
+            {"themes": ["loss of control", " human connection "]},  # dup (case/space) + a new one
+            {"themes": []},
+        ],
+        "Ana": [{"themes": [f"t{i}" for i in range(10)]}],  # more than the cap
+    }
+    out = topics_by_entity(grouped, cap=6)
+    assert out["Val Nelson"] == ["AI overwhelm", "loss of control", "human connection"]
+    assert len(out["Ana"]) == 6
+
+
+def test_voices_on_topic_is_anchored_to_the_topic_not_the_whole_competitor():
+    from pipeline import suggestions
+    people = [{"name": "Dana New", "why": "writes on this exact idea", "url": "https://dana.com",
+              "reach": None, "reach_source": None}]
+    resp = _search_response(people, ["https://dana.com"])
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    captured = {}
+    with patch("anthropic.Anthropic") as cls:
+        def create(**kw):
+            captured["prompt"] = kw["messages"][0]["content"]
+            return resp
+        cls.return_value.messages.create.side_effect = create
+        got = suggestions.voices_on_topic("loss of control over AI", "she says AI took away our agency",
+                                          "thought leadership rules", ["Val Nelson"], n=5)
+    assert [p["name"] for p in got] == ["Dana New"]
+    assert "loss of control over AI" in captured["prompt"] and "Val Nelson" in captured["prompt"]
+    assert suggestions.voices_on_topic("", "ctx", "rules", []) == []  # empty topic: no search at all
+
+
+def test_engine_returns_topics_by_entity_alongside_the_digest():
+    import feedparser
+    storage = InMemoryBackend()
+    storage.save_rules("ksenia", "general", "Rules.", "test")
+    client = make_mock_anthropic_client()
+    os.environ["ANTHROPIC_API_KEY"] = "test-key-not-real"
+    with patch("feedparser.parse", return_value=feedparser.parse(FAKE_FEED_XML)), \
+         patch("adapters.rss_adapter.RSSAdapter.fetch_full_text", return_value=None), \
+         patch("anthropic.Anthropic", return_value=client):
+        result = engine.run_stream(stream="competitor_monitoring", inputs=["Fake | http://fake-url.test/feed"],
+                                   mode="typed_only", lookback_days=3650, started_by="test", storage=storage,
+                                   config=dict(TEST_CONFIG))
+    assert "FakeCompetitor" in result["topics_by_entity"]
+    assert set(result["topics_by_entity"]["FakeCompetitor"]) >= {"pricing", "enterprise"}

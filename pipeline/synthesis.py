@@ -45,6 +45,23 @@ def _group_by_entity(findings: List[Dict]) -> Dict[str, List[Dict]]:
     return grouped
 
 
+def topics_by_entity(grouped_findings: Dict[str, List[Dict]], cap: int = 6) -> Dict[str, List[str]]:
+    """{entity: [themes]} — the distinct themes already extracted for that entity this run (see
+    pipeline/extract.py), in the order they first appear. No new AI call: this only reads what
+    extraction already tagged, so it costs nothing extra."""
+    out: Dict[str, List[str]] = {}
+    for entity, findings in grouped_findings.items():
+        seen, themes = set(), []
+        for f in findings:
+            for t in f.get("themes") or []:
+                t = str(t).strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    themes.append(t)
+        out[entity] = themes[:cap]
+    return out
+
+
 def build_synthesis_prompt(grouped_findings: Dict[str, List[Dict]], rules: str = "") -> str:
     """
     Build LLM prompt to synthesize conclusions from grouped findings.
@@ -139,7 +156,8 @@ def run_synthesis_phase(config: dict, storage: StorageBackend, client_id: str, r
                          stream: str,
                          run_coverage: Optional[Dict] = None,
                          dry_run: bool = False,
-                         usage_out: Optional[dict] = None) -> str:
+                         usage_out: Optional[dict] = None,
+                         topics_out: Optional[dict] = None) -> str:
     """
     Generate the digest from verified findings in the window, save it through
     the storage backend, and mirror it to a local file for convenience.
@@ -154,6 +172,7 @@ def run_synthesis_phase(config: dict, storage: StorageBackend, client_id: str, r
             coverage numbers come from what the earlier phases already counted,
             not a fresh query.
         dry_run: If True, return report but don't write/save it
+        topics_out: if given, filled with {entity: [themes]} for this run — see topics_by_entity()
 
     Returns:
         str: digest text
@@ -163,6 +182,8 @@ def run_synthesis_phase(config: dict, storage: StorageBackend, client_id: str, r
 
     findings = storage.get_findings_for_digest(client_id, stream, days_back=days_back)
     grouped = _group_by_entity(findings)
+    if topics_out is not None:
+        topics_out.update(topics_by_entity(grouped))
 
     date_range = _format_date_range(days_back)
     lines = [f"Digest, {date_range}", ""]
