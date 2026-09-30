@@ -19,3 +19,8 @@
   see `storage/backend.py` and `README.md` for the engine/storage/screen split.
 - Offline tests (`test_*.py`) mock every external service (Sheets, Anthropic, Apify, Gmail) and
   should stay runnable with no network and no real credentials.
+- **Inspo is split into several parts, one chat each** (to keep any one chat from growing huge), all
+  in this same repo. Chats don't share context with each other automatically — **read
+  `PROJECT_STATUS.md` at the start of a session**, and check `git status`/`git log` before assuming
+  sole ownership of the repo; another part's chat may have unfinished, uncommitted work on disk.
+  Update `PROJECT_STATUS.md`'s relevant paragraph after a meaningful chunk of work.
