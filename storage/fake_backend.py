@@ -143,11 +143,25 @@ class InMemoryBackend(StorageBackend):
         return [row for row in self.collected if row["run_id"] == run_id]
 
     def get_collected_items(self, client_id: str, stream: str, limit: int = 50) -> List[Dict]:
-        """Get unextracted items from Collected."""
+        """Get unextracted items from Collected, mapped to internal item format."""
         analysed = {r["item_url"] for r in self.ai_log
                     if not str(r.get("verdict", "")).startswith("failed")}
-        unextracted = [row for row in self.collected
-                       if row.get("url") not in analysed]
+        unextracted = []
+        for row in self.collected:
+            if row.get("url") not in analysed:
+                # Map sheet columns to internal format
+                text_complete = row.get("text_complete")
+                is_complete = text_complete == True or text_complete == "TRUE" or text_complete == "✓"
+                unextracted.append({
+                    "source_name": row.get("source", ""),
+                    "source_url": row.get("url", ""),
+                    "title": row.get("title", ""),
+                    "text": row.get("text", ""),
+                    "author": row.get("author", ""),
+                    "published_date": row.get("published_at", ""),
+                    "text_complete": is_complete,
+                    "tool": row.get("tool", "RSS reader"),
+                })
         return unextracted[:limit]
 
     # ---- AI_log ----

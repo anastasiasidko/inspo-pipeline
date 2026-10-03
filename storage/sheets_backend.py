@@ -376,7 +376,7 @@ class SheetsBackend(StorageBackend):
 
     def get_collected_items(self, client_id: str, stream: str, limit: int = 50) -> List[Dict]:
         """
-        Get unextracted items from the Collected tab.
+        Get unextracted items from the Collected tab, mapped to internal item format.
 
         Items count as "unextracted" if they have no successful AI_log entry (i.e., the AI never
         analysed them, or its analysis failed). Returns at most `limit` items.
@@ -385,9 +385,23 @@ class SheetsBackend(StorageBackend):
         analysed = {r["item_url"] for r in self._read_rows("AI_log")
                     if not str(r.get("verdict", "")).startswith("failed")}
 
-        # Get unanalyzed items from Collected
-        unextracted = [row for row in self._read_rows("Collected")
-                       if row.get("url") not in analysed]
+        # Get unanalyzed items from Collected, map to internal format
+        unextracted = []
+        for row in self._read_rows("Collected"):
+            if row.get("url") not in analysed:
+                # Map sheet columns to internal item format
+                text_complete = row.get("text_complete")
+                is_complete = text_complete == True or text_complete == "TRUE" or text_complete == "✓"
+                unextracted.append({
+                    "source_name": row.get("source", ""),
+                    "source_url": row.get("url", ""),
+                    "title": row.get("title", ""),
+                    "text": row.get("text", ""),
+                    "author": row.get("author", ""),
+                    "published_date": row.get("published_at", ""),
+                    "text_complete": is_complete,
+                    "tool": row.get("tool", "RSS reader"),
+                })
 
         return unextracted[:limit]
 
