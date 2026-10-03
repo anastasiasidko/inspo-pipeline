@@ -145,6 +145,11 @@ class StorageBackend(ABC):
     def get_collected_for_run(self, run_id: str) -> List[Dict]:
         ...
 
+    @abstractmethod
+    def get_collected_items(self, client_id: str, stream: str, limit: int = 50) -> List[Dict]:
+        """Get unextracted items from Collected (items without successful AI_log entries)."""
+        ...
+
     # ---- AI_log ----
 
     @abstractmethod

@@ -512,3 +512,212 @@ def run_video(candidate: Dict, transcript: str, stream: str, lookback_days: int,
         raise
     storage.finish_run(run_id, stats)
     return {"run_id": run_id, "digest": digest, "stats": stats}
+
+
+def run_collect_only(
+    sources: List[Dict],
+    stream: str,
+    lookback_days: int,
+    started_by: str,
+    client_id: str = DEFAULT_CLIENT_ID,
+    storage: Optional[StorageBackend] = None,
+) -> Dict:
+    """
+    One-off: fetch + dedup only, then stop — no extraction, scoring, digest, or AI call of any
+    kind. Real (not dry-run) Apify scraping, so it costs real Apify money and writes genuinely new
+    items to the Collected tab. Used when spending Apify credit is the goal and Anthropic calls
+    must be avoided entirely (e.g. the account is over its usage limit).
+
+    `sources` are already-resolved {"name", "feed_url", "kind"} dicts — see
+    adapters/feed_discovery.sources_for_competitor — not raw "Label: url" text.
+
+    Returns: {"run_id", "stats", "notices", "collected_count"}
+    """
+    storage = storage or _default_storage()
+    storage.init()
+
+    inputs_used = [s["feed_url"] for s in sources]
+    run_id = storage.start_run(client_id, stream, started_by, inputs_used, "typed_only")
+    logger.info(f"Collect-only run {run_id} started — stream={stream}, sources={len(sources)}, no AI")
+
+    try:
+        fetch_result = fetch.run_fetch_phase(sources, stream, dry_run=False, lookback_days=lookback_days)
+        items = _within_lookback(fetch_result["items"], lookback_days)
+        dedup_result = dedup.run_dedup_phase(storage, client_id, stream, run_id, items, dry_run=False)
+
+        apify_cost = round(sum(fetch_result.get("apify_by_tool", {}).values()), 4)
+        cost_breakdown = " | ".join(f"{tool}: ${usd:.4f}" for tool, usd in
+                                    fetch_result.get("apify_by_tool", {}).items()) or "no paid calls"
+        stats = {
+            "sources_checked": len(sources), "collected": len(items),
+            "new_after_dedup": len(dedup_result["new_items"]),
+            "ai_findings": 0, "quote_verified": 0, "in_digest": 0,
+            "zero_result_sources": fetch_result["sources_returning_zero"], "errors": 0,
+            "est_cost": apify_cost, "cost_breakdown": cost_breakdown, "status": "collected_only",
+        }
+    except Exception:
+        storage.finish_run(run_id, {"errors": 1, "status": "failed"})
+        raise
+
+    storage.finish_run(run_id, stats)
+    logger.info(f"Collect-only run {run_id} complete — collected={stats['collected']}, "
+               f"new={stats['new_after_dedup']}, cost=${stats['est_cost']}")
+    return {"run_id": run_id, "stats": stats, "notices": fetch_result.get("notices", []),
+            "collected_count": len(dedup_result["new_items"])}
+
+
+def run_from_collected(
+    stream: str,
+    max_items: int,
+    lookback_days: int,
+    started_by: str,
+    client_id: str = DEFAULT_CLIENT_ID,
+    storage: Optional[StorageBackend] = None,
+    config: Optional[dict] = None,
+    dry_run: bool = False,
+) -> Dict:
+    """
+    Process items already in the Collected tab through extraction → scoring → synthesis → digest
+    pipeline, skipping fetch and dedup entirely. Used when you have raw-collected items that need
+    AI analysis and competitor mapping.
+
+    Reads the first `max_items` rows from the Collected tab, processes them through AI extraction
+    and novelty scoring, synthesizes a digest, and builds the competitor map (posting cadence +
+    similar voices).
+
+    Returns: {"run_id": str, "digest": str, "stats": dict, "competitor_map": str, "similar_voices": dict}
+    """
+    storage = storage or _default_storage()
+    storage.init()
+    config = _config_with_rules(storage, client_id, stream, lookback_days, config)
+
+    # Read unextracted items from Collected tab
+    collected_items = storage.get_collected_items(client_id, stream, limit=max_items)
+    logger.info(f"Processing {len(collected_items)} items from Collected tab")
+
+    run_id = storage.start_run(client_id, stream, started_by, [f"from_collected: {len(collected_items)}"], "from_collected")
+    errors = 0
+
+    try:
+        # Extract
+        extract_result = extract.run_extraction_phase(
+            config, storage, client_id, run_id, collected_items, dry_run=dry_run,
+        )
+        errors += extract_result["errors"]
+
+        # Score
+        score.run_scoring_phase(
+            storage, client_id, stream,
+            scoring_direction=config.get("scoring_direction", "novelty"),
+            dry_run=dry_run,
+        )
+
+        # Build map (posting cadence)
+        from adapters.apify_linkedin_adapter import DEFAULT_MAX_POSTS
+        competitors = list(dict.fromkeys(
+            item.get("source_name", "").partition(" — ")[0] for item in collected_items
+            if item.get("source_name")
+        ))
+        map_rows = competitor_map.build_map([], collected_items, lookback_days, DEFAULT_MAX_POSTS)
+
+        # Find similar voices for each competitor
+        similar, similar_cost, similar_errors = {}, 0.0, []
+        saved = {r.get("competitor"): r for r in storage.get_saved_items(client_id, stream, active_only=False)}
+        followed = [n for n in saved if n] + list(competitors)
+        findings = [f for f in storage.get_findings_for_digest(client_id, stream, days_back=lookback_days)
+                    if f.get("run_id") == run_id]
+
+        if not dry_run and not extract_result.get("fatal_error"):
+            from pipeline import suggestions
+            out, usage, seen = {}, {}, list(followed)
+            for name in competitors:
+                if name:
+                    about = [f"Positioning: {saved[name].get('positioning')}" for _ in [0] if saved.get(name, {}).get("positioning")]
+                    about += [f"Keywords: {saved[name].get('keywords')}" for _ in [0] if saved.get(name, {}).get("keywords")]
+                    about += [f"- {f['summary']}" for f in findings if f.get("entity") == name][:6]
+                    people = suggestions.similar_voices(name, "\n".join(about), config.get("relevance_ruleset", ""), seen,
+                                                        n=SIMILAR_PER_COMPETITOR, usage_out=usage)
+                    out[name] = people
+                    seen += [p["name"] for p in people]
+            similar = out
+            if usage:
+                from pipeline.costs import llm_cost_usd
+                similar_cost = (llm_cost_usd(config, suggestions.SUGGEST_MODEL, usage.get("input", 0), usage.get("output", 0))
+                                + WEB_SEARCH_USD * usage.get("searches", 0))
+            if usage.get("error"):
+                similar_errors = [usage["error"]]
+
+        # Add similar voices to map
+        if similar and not dry_run:
+            map_rows = map_rows + [
+                {"competitor": comp, "channel": "Similar voice", "posts": "", "per_week": "", "days": "",
+                 "capped": False, "similar_person": p["name"], "why_similar": p["why"], "reach": p["reach"] or "",
+                 "source_url": p["url"]}
+                for comp, people in similar.items() for p in people]
+
+        if not dry_run:
+            storage.save_competitor_map(client_id, run_id, lookback_days, map_rows)
+
+        # Synthesize digest
+        run_coverage = {
+            "sources_checked": len(collected_items),
+            "items_collected": len(collected_items),
+            "findings_extracted": extract_result["signals_extracted"],
+            "ai_failed": extract_result.get("failed", 0), "ai_error": extract_result.get("first_error"),
+        }
+        digest_usage: dict = {}
+        digest_topics: dict = {}
+        digest = synthesis.run_synthesis_phase(
+            config, storage, client_id, run_id, stream,
+            run_coverage=run_coverage, dry_run=dry_run, usage_out=digest_usage, topics_out=digest_topics,
+        )
+
+        # Cost breakdown
+        cost_parts = []
+        if extract_result.get("est_cost"):
+            cost_parts.append((f"Anthropic extraction ({extract_result.get('model')}, "
+                               f"{extract_result.get('llm_calls', 0)} calls)", extract_result["est_cost"]))
+        if similar_cost:
+            cost_parts.append((f"Anthropic similar-people search ({SIMILAR_PER_COMPETITOR} per competitor)", similar_cost))
+        if digest_usage.get("cost"):
+            cost_parts.append((f"Anthropic digest ({digest_usage['model']})", digest_usage["cost"]))
+        cost_breakdown = " | ".join(f"{name}: ${usd:.4f}" for name, usd in cost_parts) or "no paid calls"
+
+        map_text = competitor_map.format_map(map_rows, lookback_days, DEFAULT_MAX_POSTS)
+
+        stats = {
+            "items_processed": len(collected_items),
+            "ai_findings": extract_result["signals_extracted"],
+            "quote_verified": extract_result["quote_verified_count"],
+            "in_digest": extract_result["quote_verified_count"],
+            "errors": errors,
+            "est_cost": round(sum(usd for _, usd in cost_parts), 4),
+            "cost_breakdown": cost_breakdown,
+            "status": "dry_run" if dry_run else "done",
+        }
+    except Exception:
+        storage.finish_run(run_id, {"errors": errors + 1, "status": "failed"})
+        raise
+
+    storage.finish_run(run_id, stats)
+    usage_log.flush(storage)
+    if not dry_run:
+        cleanup_stats = storage.cleanup_old_data(retention_days=30)
+        if cleanup_stats.get("collected_deleted") or cleanup_stats.get("ai_log_deleted"):
+            logger.info(f"Retention cleanup: {cleanup_stats}")
+
+    logger.info(f"From-collected run {run_id} complete — processed={stats['items_processed']}, "
+                f"findings={stats['ai_findings']}, verified={stats['quote_verified']}")
+
+    notices = []
+    if extract_result.get("failed"):
+        notices.insert(0, f"The AI could not analyse {extract_result['failed']} post(s): "
+                          f"{extract_result.get('first_error')} Nothing was lost — the posts are kept and will "
+                          f"be analysed the next time you run them. Each one is listed in the AI_log tab.")
+    if similar_errors:
+        notices.append(f"The search for similar people failed: {similar_errors[0]}")
+
+    return {
+        "run_id": run_id, "digest": digest, "stats": stats, "notices": notices,
+        "competitor_map": map_text, "similar_voices": similar, "topics_by_entity": digest_topics
+    }

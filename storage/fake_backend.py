@@ -142,6 +142,14 @@ class InMemoryBackend(StorageBackend):
     def get_collected_for_run(self, run_id: str) -> List[Dict]:
         return [row for row in self.collected if row["run_id"] == run_id]
 
+    def get_collected_items(self, client_id: str, stream: str, limit: int = 50) -> List[Dict]:
+        """Get unextracted items from Collected."""
+        analysed = {r["item_url"] for r in self.ai_log
+                    if not str(r.get("verdict", "")).startswith("failed")}
+        unextracted = [row for row in self.collected
+                       if row.get("url") not in analysed]
+        return unextracted[:limit]
+
     # ---- AI_log ----
 
     def save_ai_log_batch(self, run_id: str, entries: List[Dict]) -> None:

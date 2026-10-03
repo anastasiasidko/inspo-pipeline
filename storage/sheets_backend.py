@@ -374,6 +374,23 @@ class SheetsBackend(StorageBackend):
     def get_collected_for_run(self, run_id: str) -> List[Dict]:
         return [row for row in self._read_rows("Collected") if row["run_id"] == run_id]
 
+    def get_collected_items(self, client_id: str, stream: str, limit: int = 50) -> List[Dict]:
+        """
+        Get unextracted items from the Collected tab.
+
+        Items count as "unextracted" if they have no successful AI_log entry (i.e., the AI never
+        analysed them, or its analysis failed). Returns at most `limit` items.
+        """
+        # Get URLs that have been successfully analyzed
+        analysed = {r["item_url"] for r in self._read_rows("AI_log")
+                    if not str(r.get("verdict", "")).startswith("failed")}
+
+        # Get unanalyzed items from Collected
+        unextracted = [row for row in self._read_rows("Collected")
+                       if row.get("url") not in analysed]
+
+        return unextracted[:limit]
+
     # ---- AI_log ----
 
     def save_ai_log_batch(self, run_id: str, entries: List[Dict]) -> None:
