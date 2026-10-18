@@ -1,5 +1,7 @@
 """Offline test: channel-line parsing and link classification (no network for these cases)."""
 import sys
+from unittest.mock import MagicMock, patch
+
 sys.path.insert(0, ".")
 from adapters.feed_discovery import parse_channel_lines, resolve_channel, format_channel_lines
 
@@ -15,5 +17,19 @@ def test_all():
     assert resolve_channel("https://insighttimer.com/ValNelson")["kind"] is None
     print("  PASS — lines parse; LinkedIn, X and other social links go to Apify; unsupported sites are flagged")
 
+
+def test_url_that_is_already_a_feed_is_used_directly():
+    # A journal/newsletter's own "RSS" link (e.g. https://example.com/feed.xml) IS the feed —
+    # resolve_channel must use it as-is, not try to crawl it as an HTML page for a <link> tag.
+    with patch("feedparser.parse", return_value=MagicMock(entries=[MagicMock(), MagicMock()])) as mock_parse:
+        result = resolve_channel("https://hnrss.org/frontpage")
+    assert result == {"kind": "rss", "feed_url": "https://hnrss.org/frontpage", "note": "RSS feed"}, result
+    mock_parse.assert_called_with("https://hnrss.org/frontpage")
+    print("  PASS — a URL that's already a feed is used directly, not crawled as a page")
+
+
 if __name__ == "__main__":
-    print("Feed discovery — offline test"); test_all(); print("ALL TESTS PASSED")
+    print("Feed discovery — offline test")
+    test_all()
+    test_url_that_is_already_a_feed_is_used_directly()
+    print("ALL TESTS PASSED")

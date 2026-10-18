@@ -90,6 +90,10 @@ def resolve_channel(url: str) -> Dict:
         return {"kind": platform, "feed_url": url, "note": f"{pretty(platform)} (Apify){extra}"}
     if any(host.endswith(d) for d in NOT_COLLECTABLE):
         return {"kind": None, "feed_url": None, "note": "no feed available for this platform yet"}
+    if _has_entries(url):
+        # The URL is already a feed (e.g. pasted straight from a journal's "RSS" link) — use it as-is,
+        # rather than treating it as a page and searching it for a <link> tag or common feed paths.
+        return {"kind": "rss", "feed_url": url, "note": "RSS feed"}
     if host == "medium.com":
         m = re.match(r"https?://(?:www\.)?medium\.com/(@[^/?#]+)", url)
         if m and _has_entries(f"https://medium.com/feed/{m.group(1)}"):
